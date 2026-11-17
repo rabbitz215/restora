@@ -169,7 +169,7 @@ function renderConns() {
       <div class="tree-row conn ${t.open ? 'open' : ''}" data-act="tree-conn" data-id="${c.id}" title="${esc(c.user)}@${esc(c.host)}:${c.port}">
         <span class="chev">${ic('chev')}</span><span class="dot" style="color:${esc(c.color)}"></span>
         <div class="meta"><b>${esc(c.name)}</b><small>${esc(c.user)}@${esc(c.host)}:${c.port}</small></div>
-        <span class="row-actions"><button class="icon-btn" data-act="tree-refresh" data-id="${c.id}" title="Refresh">${ic('refresh')}</button><button class="icon-btn" data-act="edit-conn" data-id="${c.id}" title="Edit connection">${ic('pencil')}</button></span>
+        <span class="row-actions"><button class="icon-btn" data-act="tree-newdb" data-id="${c.id}" title="New database">${ic('plus')}</button><button class="icon-btn" data-act="tree-refresh" data-id="${c.id}" title="Refresh">${ic('refresh')}</button><button class="icon-btn" data-act="edit-conn" data-id="${c.id}" title="Edit connection">${ic('pencil')}</button></span>
       </div>
       ${t.open ? `<div class="tree-kids">${Array.isArray(t.dbs) && t.dbs.length > 6 ? `<div class="tree-filter">${ic('search')}<input placeholder="Filter databases…" value="${esc(t.filter)}" data-input="tree-filter" data-id="${c.id}" spellcheck="false"></div>` : ''}<div data-dbs="${c.id}">${treeDbsHtml(c.id)}</div></div>` : ''}
     </div>`;
@@ -180,7 +180,7 @@ function treeDbsHtml(id) {
   const t = T(id);
   if (t.dbs === null) return '<div class="tree-msg">' + ic('loader', 'spin') + 'Loading databases…</div>';
   if (t.dbs.error) return `<div class="tree-msg bad" title="${esc(t.dbs.error)}">${ic('alert')}<span>${esc(t.dbs.error)}</span></div>`;
-  if (!t.dbs.length) return '<div class="tree-msg">No databases yet</div>';
+  if (!t.dbs.length) return `<div class="tree-msg">No databases yet · <a href="#" data-act="tree-newdb" data-id="${id}">Create one</a></div>`;
   const f = t.filter.toLowerCase();
   const list = t.dbs.filter((d) => d.name.toLowerCase().includes(f));
   if (!list.length) return '<div class="tree-msg">No match</div>';
@@ -190,7 +190,7 @@ function treeDbsHtml(id) {
     const active = S.dv.connId === id && S.dv.db === d.name;
     return `<div class="tree-row db ${open ? 'open' : ''} ${active && !open ? 'active' : ''}" data-act="tree-db" data-id="${id}" data-db="${esc(d.name)}" title="${esc(d.name)} · ${d.tables} tables · ${fmtBytes(d.size)}">
         <span class="chev">${ic('chev')}</span>${ic('db')}<span class="name">${esc(d.name)}</span><small>${d.tables || ''}</small>
-        <span class="row-actions"><button class="icon-btn" data-act="tree-query" data-id="${id}" data-db="${esc(d.name)}" title="New SQL query on ${esc(d.name)}">${ic('code')}</button><button class="icon-btn" data-act="tree-restore" data-id="${id}" data-db="${esc(d.name)}" title="Restore a dump into ${esc(d.name)}">${ic('restore')}</button><button class="icon-btn" data-act="tree-export" data-id="${id}" data-db="${esc(d.name)}" title="Export ${esc(d.name)}">${ic('download')}</button></span>
+        <span class="row-actions"><button class="icon-btn" data-act="tree-newtable" data-id="${id}" data-db="${esc(d.name)}" title="New table in ${esc(d.name)}">${ic('plus')}</button><button class="icon-btn" data-act="tree-query" data-id="${id}" data-db="${esc(d.name)}" title="New SQL query on ${esc(d.name)}">${ic('code')}</button><button class="icon-btn" data-act="tree-restore" data-id="${id}" data-db="${esc(d.name)}" title="Restore a dump into ${esc(d.name)}">${ic('restore')}</button><button class="icon-btn" data-act="tree-export" data-id="${id}" data-db="${esc(d.name)}" title="Export ${esc(d.name)}">${ic('download')}</button></span>
       </div>
       ${open ? `${Array.isArray(tables) && tables.length > 1 ? `<div class="tree-filter l2">${ic('search')}<input placeholder="Search ${tables.length} tables…" value="${esc(t.tFilter[d.name] || '')}" data-input="tree-tfilter" data-id="${id}" data-db="${esc(d.name)}" spellcheck="false">${t.tFilter[d.name] ? `<button class="icon-btn" data-act="tree-tfilter-clear" data-id="${id}" data-db="${esc(d.name)}" title="Clear">${ic('x')}</button>` : ''}</div>` : ''}<div data-tbls="${id}" data-db="${esc(d.name)}">${treeTablesHtml(id, d.name, tables)}</div>` : ''}`;
   }).join('');
@@ -199,7 +199,7 @@ function treeDbsHtml(id) {
 function treeTablesHtml(id, db, tables) {
   if (tables === null) return '<div class="tree-msg l2">' + ic('loader', 'spin') + 'Loading…</div>';
   if (tables.error) return `<div class="tree-msg l2 bad">${esc(tables.error)}</div>`;
-  if (!tables.length) return '<div class="tree-msg l2">No tables</div>';
+  if (!tables.length) return `<div class="tree-msg l2">No tables · <a href="#" data-act="tree-newtable" data-id="${id}" data-db="${esc(db)}">Create one</a></div>`;
   const q = (T(id).tFilter[db] || '').trim().toLowerCase();
   const list = q ? tables.filter((x) => x.name.toLowerCase().includes(q)) : tables;
   if (!list.length) return '<div class="tree-msg l2">No table matches</div>';
@@ -1515,6 +1515,110 @@ async function initUpdates() {
   if (U.supported && U.auto) { setTimeout(() => checkUpdates(false), 4000); setInterval(() => { if (U.auto && (U.state === 'none' || U.state === 'error' || U.state === 'idle')) checkUpdates(false); }, 6 * 3600 * 1000); }
 }
 
+/* ================= CREATE DATABASE / TABLE ================= */
+const CT_TYPES = ['INT', 'INT UNSIGNED', 'BIGINT', 'BIGINT UNSIGNED', 'TINYINT(1)', 'SMALLINT', 'DECIMAL(10,2)', 'DOUBLE', 'VARCHAR(255)', 'VARCHAR(100)', 'CHAR(36)', 'TEXT', 'MEDIUMTEXT', 'LONGTEXT', 'DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'YEAR', 'JSON', 'BOOLEAN', "ENUM('a','b')", 'BLOB'];
+let CT = null;
+const ctCol = (o = {}) => ({ name: '', type: 'VARCHAR(255)', nullable: true, default: '', pk: false, ai: false, ...o });
+
+async function openNewDatabase(connId) {
+  const conn = connById(connId);
+  CT = { mode: 'db', connId, name: '', collation: null, colls: null, busy: false, error: null };
+  renderCreate(); $('#createDialog').showModal(); setTimeout(() => $('#ct-name')?.focus(), 30);
+  try { const r = await api.create.collations(connId); if (CT?.mode === 'db') { CT.colls = r.collations; CT.collation = r.default; renderCreate(true); } }
+  catch (e) { if (CT) { CT.error = e.message; renderCreate(true); } }
+}
+function openNewTable(connId, db) {
+  CT = { mode: 'table', connId, db, name: '', busy: false, error: null, sql: '', columns: [
+    ctCol({ name: 'id', type: 'BIGINT UNSIGNED', nullable: false, pk: true, ai: true }),
+    ctCol({ name: 'name', type: 'VARCHAR(255)', nullable: false }),
+    ctCol({ name: 'created_at', type: 'DATETIME', nullable: false, default: 'CURRENT_TIMESTAMP' }),
+  ] };
+  renderCreate(); $('#createDialog').showModal(); setTimeout(() => $('#ct-name')?.focus(), 30);
+  refreshCtSql();
+}
+function ctRowsHtml() {
+  return CT.columns.map((c, i) => `<tr>
+    <td><input class="input sm mono" value="${esc(c.name)}" placeholder="column_name" data-input="ct-col" data-i="${i}" data-k="name" spellcheck="false"></td>
+    <td><input class="input sm mono" value="${esc(c.type)}" list="ct-types" data-input="ct-col" data-i="${i}" data-k="type" spellcheck="false"></td>
+    <td class="c"><input type="checkbox" class="check" data-change="ct-chk" data-i="${i}" data-k="nullable" ${c.nullable && !c.ai ? 'checked' : ''} ${c.ai ? 'disabled' : ''}></td>
+    <td><input class="input sm mono" value="${esc(c.default)}" placeholder="${c.ai ? 'auto' : 'none'}" data-input="ct-col" data-i="${i}" data-k="default" spellcheck="false" ${c.ai ? 'disabled' : ''}></td>
+    <td class="c"><input type="checkbox" class="check" data-change="ct-chk" data-i="${i}" data-k="pk" ${c.pk || c.ai ? 'checked' : ''} ${c.ai ? 'disabled' : ''}></td>
+    <td class="c"><input type="checkbox" class="check" data-change="ct-chk" data-i="${i}" data-k="ai" ${c.ai ? 'checked' : ''}></td>
+    <td class="c"><button class="icon-btn" data-act="ct-del" data-i="${i}" title="Remove column" ${CT.columns.length < 2 ? 'disabled' : ''}>${ic('trash')}</button></td>
+  </tr>`).join('');
+}
+function renderCreate(partial) {
+  const el = $('#createDialog'), conn = connById(CT.connId);
+  if (CT.mode === 'db') {
+    if (partial && $('#ct-coll')) {
+      $('#ct-coll').innerHTML = CT.colls ? CT.colls.map((c) => `<option ${c === CT.collation ? 'selected' : ''}>${esc(c)}</option>`).join('') : '<option>Loading…</option>';
+      $('#ct-err').innerHTML = CT.error ? `<div class="callout danger">${ic('alert')}<div>${esc(CT.error)}</div></div>` : '';
+      return;
+    }
+    el.innerHTML = `<div class="modal">
+      <div class="modal-head"><div class="logo" style="width:36px;height:36px">${ic('db')}</div><div><h3>New database</h3><p>On ${esc(conn?.name || '?')} · ${esc(conn?.user || '')}@${esc(conn?.host || '')}</p></div><button class="icon-btn" data-act="ct-close">${ic('x')}</button></div>
+      <div class="modal-body">
+        <div class="field"><label>Name</label><input class="input mono" id="ct-name" value="${esc(CT.name)}" placeholder="my_database" data-input="ct-name" spellcheck="false"></div>
+        <div class="field"><label>Collation <span class="muted" style="font-weight:400">(character set utf8mb4)</span></label><select class="select mono" id="ct-coll" data-change="ct-coll"><option>Loading…</option></select></div>
+        <div id="ct-err"></div>
+      </div>
+      <div class="modal-foot"><div class="spacer"></div><button class="btn" data-act="ct-close">Cancel</button><button class="btn primary" data-act="ct-create" id="ct-go">${ic('plus')}Create database</button></div></div>`;
+    renderCreate(true);
+    return;
+  }
+  el.innerHTML = `<div class="modal ct-modal">
+    <div class="modal-head"><div class="logo" style="width:36px;height:36px">${ic('table')}</div><div><h3>New table</h3><p>In <span class="mono">${esc(CT.db)}</span> on ${esc(conn?.name || '?')}</p></div><button class="icon-btn" data-act="ct-close">${ic('x')}</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Table name</label><input class="input mono" id="ct-name" value="${esc(CT.name)}" placeholder="orders" data-input="ct-name" spellcheck="false"></div>
+      <div class="ct-cols"><table class="ct-table"><thead><tr><th>Column</th><th>Type</th><th class="c">Null</th><th>Default</th><th class="c" title="Primary key">PK</th><th class="c" title="Auto increment">AI</th><th></th></tr></thead><tbody id="ct-rows">${ctRowsHtml()}</tbody></table>
+        <datalist id="ct-types">${CT_TYPES.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+        <button class="btn sm ghost" data-act="ct-add">${ic('plus')}Add column</button></div>
+      <div class="field"><label>SQL</label><pre class="ct-sql" id="ct-sql"></pre></div>
+    </div>
+    <div class="modal-foot"><span class="muted" style="font-size:12px">Defaults: text is quoted for you; NULL and CURRENT_TIMESTAMP are kept as-is.</span><div class="spacer"></div><button class="btn" data-act="ct-close">Cancel</button><button class="btn primary" data-act="ct-create" id="ct-go">${ic('plus')}Create table</button></div></div>`;
+  renderCtSql();
+}
+let ctTimer = null;
+function refreshCtSql() {
+  clearTimeout(ctTimer);
+  ctTimer = setTimeout(async () => {
+    if (!CT || CT.mode !== 'table') return;
+    try { CT.sql = await api.create.tableSql(CT.db, { name: CT.name || 'new_table', columns: CT.columns }); CT.error = null; }
+    catch (e) { CT.sql = ''; CT.error = e.message; }
+    renderCtSql();
+  }, 120);
+}
+function renderCtSql() {
+  const el = $('#ct-sql'); if (!el || !CT) return;
+  el.innerHTML = CT.error ? `<span class="ct-sql-err">${ic('alert')}${esc(CT.error)}</span>` : hlSql(CT.sql || '').replace(/\n $/, '');
+  $('#ct-go')?.toggleAttribute('disabled', !!CT.error || CT.busy || !CT.name.trim());
+}
+async function createIt() {
+  if (!CT || CT.busy) return;
+  const { connId } = CT;
+  CT.busy = true; $('#ct-go')?.setAttribute('disabled', '');
+  try {
+    if (CT.mode === 'db') {
+      const name = CT.name.trim();
+      await api.create.database(connId, name, CT.collation);
+      $('#createDialog').close(); toast(`Created database ${name}`, 'ok');
+      const t = T(connId); t.open = true; saveTreeOpen();
+      await loadTreeDbs(connId); loadTreeTables(connId, name);
+    } else {
+      const { db } = CT;
+      const r = await api.create.table(connId, db, { name: CT.name, columns: CT.columns });
+      $('#createDialog').close(); toast(`Created table ${db}.${r.name}`, 'ok');
+      await loadTreeTables(connId, db);
+      openTable(connId, db, r.name);
+    }
+    CT = null;
+  } catch (e) {
+    CT.busy = false; CT.error = e.message;
+    if (CT.mode === 'db') renderCreate(true); else renderCtSql();
+    toast(e.message);
+  }
+}
+
 /* ================= JOB ================= */
 const pct = (p) => (p && p.total ? Math.min(100, (100 * p.bytes) / p.total) : 0);
 const RING_C = 2 * Math.PI * 88;
@@ -1957,6 +2061,12 @@ const actions = {
   'tree-refresh': (el) => { const t = T(el.dataset.id); t.open = true; saveTreeOpen(); loadTreeDbs(el.dataset.id); },
   'tree-refresh-all': () => { for (const c of S.conns) if (T(c.id).open) loadTreeDbs(c.id); },
   'tree-db': (el) => { const t = T(el.dataset.id), db = el.dataset.db; if (t.openDbs[db] !== undefined) { delete t.openDbs[db]; renderConns(); } else loadTreeTables(el.dataset.id, db); },
+  'tree-newdb': (el) => openNewDatabase(el.dataset.id),
+  'tree-newtable': (el) => openNewTable(el.dataset.id, el.dataset.db),
+  'ct-close': () => { $('#createDialog').close(); CT = null; },
+  'ct-create': () => createIt(),
+  'ct-add': () => { CT.columns.push(ctCol()); $('#ct-rows').innerHTML = ctRowsHtml(); refreshCtSql(); const ins = document.querySelectorAll('#ct-rows input[data-k="name"]'); ins[ins.length - 1]?.focus(); },
+  'ct-del': (el) => { CT.columns.splice(Number(el.dataset.i), 1); $('#ct-rows').innerHTML = ctRowsHtml(); refreshCtSql(); },
   'tree-table': (el) => openTable(el.dataset.id, el.dataset.db, el.dataset.table),
   'tree-restore': (el) => { Object.assign(S.r, { dbMode: 'existing', dbFilter: '' }); go('restore'); selectRestoreConn(el.dataset.id, el.dataset.db); },
   'tree-export': (el) => { S.e.allTables = true; go('export'); selectExportConn(el.dataset.id, el.dataset.db); },
@@ -2117,6 +2227,13 @@ const changes = {
   'q-db': (el) => { S.dv.db = el.value || null; saveTabs(); renderTabs(); },
   'q-coe': (el) => { S.dv.coe = el.checked; },
   'upd-auto': (el) => { U.auto = el.checked; store.set('update.auto', el.checked); if (el.checked && U.state === 'idle') checkUpdates(false); },
+  'ct-coll': (el) => { CT.collation = el.value; },
+  'ct-chk': (el) => {
+    const c = CT.columns[Number(el.dataset.i)], k = el.dataset.k;
+    c[k] = el.checked;
+    if (k === 'ai' && el.checked) { c.pk = true; c.nullable = false; if (!/int/i.test(c.type)) c.type = 'BIGINT UNSIGNED'; CT.columns.forEach((o, j) => { if (j !== Number(el.dataset.i)) o.ai = false; }); }
+    $('#ct-rows').innerHTML = ctRowsHtml(); refreshCtSql();
+  },
   'th-hex': (el) => { const v = el.value.trim(); if (/^#?[0-9a-f]{6}$/i.test(v)) editTheme({ [el.dataset.k]: v.startsWith('#') ? v : '#' + v }); else renderThemeEditor(); },
   'th-grad': (el) => { const t = Theme.current; editTheme(el.checked ? { accent2: Theme.mix(t.accent, '#22d3ee', 0.6) } : { accent2: null, mid: null }); },
   'th-mid': (el) => { const t = Theme.current; editTheme({ mid: el.checked ? Theme.mix(t.accent, t.accent2, 0.5) : null }); },
@@ -2155,6 +2272,8 @@ const inputs = {
     cancelAnimationFrame(thRaf);
     thRaf = requestAnimationFrame(() => { editTheme({ [k]: v }, false); const sw_ = $('#th-edit .th-swatch'); if (sw_) { const d = Theme.derive(Theme.current); sw_.style.background = d['--accent-grad']; sw_.style.color = d['--on-accent']; } });
   },
+  'ct-name': (el) => { CT.name = el.value; if (CT.mode === 'table') refreshCtSql(); else $('#ct-go')?.toggleAttribute('disabled', !el.value.trim()); },
+  'ct-col': (el) => { CT.columns[Number(el.dataset.i)][el.dataset.k] = el.value; refreshCtSql(); },
   'th-name': (el) => { TH.name = el.value; },
   'dv-search': (el) => { S.dv.search = el.value; fetchDataSoon(); },
   'dv-filter': (el) => { S.dv.filters[el.dataset.col] = el.value; el.classList.toggle('on', !!el.value.trim()); fetchDataSoon(); },
@@ -2223,6 +2342,8 @@ document.addEventListener('keydown', (e) => {
 // Middle-click closes a tab.
 document.addEventListener('auxclick', (e) => { const t = e.button === 1 && e.target.closest('.tab[data-key]'); if (t) { e.preventDefault(); closeTab(t.dataset.key); } });
 document.addEventListener('dblclick', (e) => { if (e.target.closest('#dv-tbody td[data-r]')) openValue(); if (e.target.closest('#q-tbody td[data-qr]')) actions['q-expand'](); });
+$('#createDialog').addEventListener('click', (e) => { if (e.target.id === 'createDialog') { e.target.close(); CT = null; } });
+$('#createDialog').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'ct-name') { e.preventDefault(); createIt(); } });
 $('#updDialog').addEventListener('click', (e) => { if (e.target.id === 'updDialog') e.target.close(); });
 $('#themeDialog').addEventListener('click', (e) => { if (e.target.id === 'themeDialog') e.target.close(); });
 $('#scpDialog').addEventListener('click', (e) => { if (e.target.id === 'scpDialog') e.target.close(); });

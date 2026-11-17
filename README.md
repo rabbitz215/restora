@@ -66,6 +66,7 @@ and the `.deb` (which asks for your password to install). You can turn automatic
 
 ### Browse data
 - Connection tree in the sidebar: servers → databases → tables, with search at each level.
+- Create a **new database** (pick the collation) or a **new table** (columns, types, NULL, default, primary key, auto increment, with a live SQL preview) right from the tree.
 - Each table opens in its own **tab**, grouped by database (even across connections); tabs come back after a restart.
 - Per-column filters under every header, search across all columns, click/Shift-click sorting, paging (50–1000 rows).
   Filter syntax: `text` contains · `=x` exact · `!x` not containing · `>5` `<=5` · `ab*` wildcard · `NULL` / `NOT NULL` · `EMPTY`.

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme, Menu } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const { Store } = require('./lib/store');
@@ -24,8 +24,17 @@ function createWindow() {
     title: 'Restora',
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'renderer', 'icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: !app.isPackaged },
   });
+  win.removeMenu();
+  // Installed builds: no dev console and no reload shortcuts.
+  if (app.isPackaged) {
+    win.webContents.on('before-input-event', (e, input) => {
+      const k = String(input.key || '').toLowerCase(), mod = input.control || input.meta;
+      if (k === 'f12' || (mod && input.shift && (k === 'i' || k === 'j' || k === 'c')) || (mod && k === 'r')) e.preventDefault();
+    });
+    win.webContents.on('devtools-opened', () => win.webContents.closeDevTools());
+  }
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
 
@@ -58,6 +67,8 @@ function resolveConn(c) {
 
 if (process.env.RESTORA_PROFILE) app.setPath('userData', process.env.RESTORA_PROFILE);
 
+Menu.setApplicationMenu(null); // no File / Edit / View / Window menu (Alt does nothing)
+
 app.whenReady().then(() => {
   store = new Store(app.getPath('userData'), safeStorage);
 
@@ -72,6 +83,10 @@ app.whenReady().then(() => {
   handle('db:list', (id) => db.listDatabases(resolveConn(id)));
   handle('db:tables', (id, name) => db.listTables(resolveConn(id), name));
   handle('db:stats', (id, name) => db.dbStats(resolveConn(id), name));
+  handle('db:collations', (id) => db.serverCollations(resolveConn(id)));
+  handle('db:create', (id, name, collation) => db.createDatabase(resolveConn(id), name, collation));
+  handle('table:sql', (dbName, def) => db.createTableSql(dbName, def));
+  handle('table:create', (id, dbName, def) => db.createTable(resolveConn(id), dbName, def));
   handle('db:objects', (id, name) => db.listObjects(resolveConn(id), name));
   handle('data:browse', (id, name, table, q) => db.browse(resolveConn(id), name, table, q));
   handle('file:save', async ({ defaultPath, gzip }) => {

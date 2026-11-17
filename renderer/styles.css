@@ -818,3 +818,20 @@ body.resizing * { user-select: none !important; }
 .upd-notes-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .upd-notes { max-height: 200px; overflow: auto; white-space: pre-wrap; font-size: 12.5px; color: var(--text-2); padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); user-select: text; margin-top: -6px; }
 .modal-foot a.btn { text-decoration: none; }
+
+/* ---------- Create database / table ---------- */
+.tree-msg a { color: var(--accent); text-decoration: none; font-weight: 500; }
+.ct-modal { width: min(820px, 94vw); }
+.ct-cols { border: 1px solid var(--border); border-radius: 11px; padding: 8px; background: var(--surface-2); }
+.ct-table { width: 100%; border-collapse: separate; border-spacing: 4px 4px; font-size: 12px; }
+.ct-table th { text-align: left; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 0 4px; }
+.ct-table th.c, .ct-table td.c { text-align: center; width: 40px; }
+.ct-table td .input.sm { width: 100%; height: 30px; }
+.ct-table td:nth-child(1) { width: 26%; }
+.ct-table td:nth-child(2) { width: 26%; }
+.ct-table td .check { margin: 0 auto; }
+.ct-table td .check:disabled { opacity: .45; cursor: default; }
+.ct-cols > .btn { margin: 2px 0 2px 4px; }
+.ct-sql { margin: 0; max-height: 190px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); font: 12px/1.6 var(--mono); white-space: pre; user-select: text; }
+.ct-sql-err { display: flex; align-items: center; gap: 8px; color: var(--danger); font-family: var(--font); white-space: normal; }
+.ct-modal .modal-foot .muted { max-width: 380px; }
