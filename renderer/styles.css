@@ -725,20 +725,20 @@ body.resizing * { user-select: none !important; }
 .q-capped { display: flex; align-items: center; gap: 8px; padding: 10px 14px; color: var(--warn); font-size: 12px; position: sticky; left: 0; }
 .q-status { margin: 0; border: none; border-top: 1px solid var(--border); border-radius: 0; }
 .msgs { display: flex; flex-direction: column; }
-.msg { display: grid; grid-template-columns: 22px 70px minmax(0, 1fr) 70px; gap: 10px; align-items: start; padding: 9px 14px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12.5px; }
-.msg:hover { background: var(--surface-2); }
-.msg .mi { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; }
-.msg .mi svg { width: 12px; height: 12px; stroke-width: 2.5; }
-.msg.ok .mi { background: var(--success-soft); color: var(--success); }
-.msg.err .mi { background: var(--danger-soft); color: var(--danger); }
-.msg.skip .mi { background: var(--surface-3); color: var(--muted); }
-.msg .ml { color: var(--muted); font: 11.5px var(--mono); padding-top: 2px; }
-.msg code { font: 11.5px var(--mono); color: var(--text-2); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.msg .mt-res { margin-top: 3px; color: var(--text); user-select: text; }
-.msg.err .mt-res { color: var(--danger); }
-.msg.err .mt-res b { font-family: var(--mono); font-size: 11.5px; }
-.msg.skip .mt-res { color: var(--muted); }
-.msg .ms { color: var(--muted); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.msgs .msg { display: grid; grid-template-columns: 22px 70px minmax(0, 1fr) 70px; gap: 10px; align-items: start; padding: 9px 14px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12.5px; }
+.msgs .msg:hover { background: var(--surface-2); }
+.msgs .msg .mi { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; }
+.msgs .msg .mi svg { width: 12px; height: 12px; stroke-width: 2.5; }
+.msgs .msg.ok .mi { background: var(--success-soft); color: var(--success); }
+.msgs .msg.err .mi { background: var(--danger-soft); color: var(--danger); }
+.msgs .msg.skip .mi { background: var(--surface-3); color: var(--muted); }
+.msgs .msg .ml { color: var(--muted); font: 11.5px var(--mono); padding-top: 2px; }
+.msgs .msg code { font: 11.5px var(--mono); color: var(--text-2); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msgs .msg .mt-res { margin-top: 3px; color: var(--text); user-select: text; }
+.msgs .msg.err .mt-res { color: var(--danger); }
+.msgs .msg.err .mt-res b { font-family: var(--mono); font-size: 11.5px; }
+.msgs .msg.skip .mt-res { color: var(--muted); }
+.msgs .msg .ms { color: var(--muted); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; padding-top: 2px; }
 
 /* ---------- Theme dialog ---------- */
 .brand .theme-btn { width: 30px; height: 30px; border-radius: 9px; }
