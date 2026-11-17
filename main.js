@@ -236,7 +236,8 @@ app.whenReady().then(() => {
   handle('update:download', async () => { try { await autoUpdater.downloadUpdate(); } catch (e) { throw new Error(friendlyUpdateError(e)); } return true; });
   handle('update:install', () => {
     for (const j of jobs.values()) j.cancel();
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // Silent: on Windows this skips the setup wizard (reuses the install folder) and reopens Restora.
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return true;
   });
 
