@@ -1,6 +1,6 @@
 {
   "name": "restora",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A good-looking desktop client to restore, export, import and browse MySQL / MariaDB databases",
   "main": "main.js",
   "scripts": {
