@@ -878,3 +878,4 @@ table.grid td.rn { cursor: pointer; }
 .cm-note { display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px; color: var(--muted); font-size: 11.5px; }
 .cm-note svg { width: 13px; height: 13px; }
 .dvc-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; } .dv-changes .btn.sm { flex: none; }
+.upd-modal .callout div { user-select: text; word-break: break-all; }

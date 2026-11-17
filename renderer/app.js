@@ -1753,7 +1753,7 @@ function onUpdate(m) {
   else if (m.type === 'none') { U.state = 'none'; U.info = d; U.checkedAt = m.at; }
   else if (m.type === 'progress') { U.state = 'downloading'; U.progress = d; }
   else if (m.type === 'downloaded') { U.state = 'downloaded'; U.info = d; }
-  else if (m.type === 'error') { U.state = U.state === 'downloading' ? 'available' : 'error'; U.error = d.message; U.checkedAt = m.at; }
+  else if (m.type === 'error') { U.state = U.state === 'downloading' ? 'available' : U.state === 'downloaded' ? 'downloaded' : 'error'; U.error = d.message; U.checkedAt = m.at; }
   renderUpdBadge();
   if ($('#updDialog').open) renderUpdDialog();
   if (m.type === 'available' && !U.manual) toast(`Restora ${d.version} is available. Click "Update" at the bottom of the sidebar.`, 'ok');
@@ -2463,6 +2463,7 @@ const actions = {
   'upd-check': () => checkUpdates(true),
   'upd-download': async () => { U.state = 'downloading'; U.error = null; U.progress = { percent: 0 }; renderUpdBadge(); renderUpdDialog(); try { await api.update.download(); } catch (e) { onUpdate({ type: 'error', data: { message: e.message }, at: Date.now() }); } },
   'upd-install': async () => {
+    U.error = null; renderUpdDialog();
     if (S.job?.status === 'running' && !(await api.confirm({ title: 'Restart & update', message: 'A job is still running. Stop it and update now?', detail: 'The running restore, export or import will be cancelled.', ok: 'Stop & update' }))) return;
     await api.update.install();
   },

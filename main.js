@@ -217,19 +217,31 @@ app.whenReady().then(() => {
   });
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.logger = null;
-  if (process.env.RESTORA_UPDATE_DEV) { autoUpdater.forceDevUpdateConfig = true; if (process.env.RESTORA_FAKE_VERSION) autoUpdater.currentVersion = new (require('semver').SemVer)(process.env.RESTORA_FAKE_VERSION); }
+  // Write updater activity (incl. pkexec / dpkg output) to <userData>/updater.log for troubleshooting.
+  const updLogFile = path.join(app.getPath('userData'), 'updater.log');
+  const updLog = (lvl) => (...a) => {
+    try {
+      if (fs.existsSync(updLogFile) && fs.statSync(updLogFile).size > 512 * 1024) fs.renameSync(updLogFile, updLogFile + '.1');
+      fs.appendFileSync(updLogFile, `${new Date().toISOString()} [${lvl}] ${a.map((x) => (x instanceof Error ? x.stack || x.message : typeof x === 'string' ? x : JSON.stringify(x))).join(' ')}\n`);
+    } catch {}
+  };
+  autoUpdater.logger = { info: updLog('info'), warn: updLog('warn'), error: updLog('error'), debug: () => {} };
+  let downloadedFile = null;
+  if (process.env.RESTORA_UPDATE_DEV) { autoUpdater.forceDevUpdateConfig = true; if (process.env.RESTORA_FAKE_VERSION) autoUpdater.currentVersion = new (require(require.resolve('semver', { paths: [path.dirname(require.resolve('electron-updater'))] })).SemVer)(process.env.RESTORA_FAKE_VERSION); }
   autoUpdater.on('checking-for-update', () => updEvent('checking'));
   autoUpdater.on('update-available', (i) => updEvent('available', updInfo(i)));
   autoUpdater.on('update-not-available', (i) => updEvent('none', updInfo(i)));
   autoUpdater.on('download-progress', (p) => updEvent('progress', { percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: p.bytesPerSecond }));
-  autoUpdater.on('update-downloaded', (i) => updEvent('downloaded', updInfo(i)));
+  autoUpdater.on('update-downloaded', (i) => { downloadedFile = i?.downloadedFile || null; updEvent('downloaded', updInfo(i)); });
   const friendlyUpdateError = (e) => {
     const m = String(e?.message || e);
     if (/latest(-linux|-mac)?\.yml/i.test(m) && /404/.test(m)) return "The latest release doesn't support in-app updates yet. Download it once from the releases page.";
     if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|net::ERR_/i.test(m)) return "Couldn't reach GitHub. Check your internet connection and try again.";
     if (/APPIMAGE env is not defined/i.test(m)) return 'In-app updates for Linux work with the AppImage or .deb build.';
     if (/403|rate limit/i.test(m)) return 'GitHub is limiting requests right now. Try again in a few minutes.';
+    if (/pkexec exited with code 126/i.test(m)) return 'Update cancelled: the password prompt was closed. Click Restart & update to try again.';
+    if (/pkexec exited with code 127/i.test(m)) return `Linux refused the install without showing a password prompt. Close Restora, open it again from your app menu and click Restart & update, or install it yourself:  sudo apt install "${downloadedFile || 'the downloaded .deb'}"  (details: updater.log in Restora's settings folder)`;
+    if (/(pkexec|sudo|dpkg|apt).*exited with code/i.test(m)) return `Couldn't install the update automatically. You can install it yourself with:  sudo apt install "${downloadedFile || 'the downloaded .deb'}"`;
     return m.split(/\r?\n|\\n| Headers:/)[0].slice(0, 220);
   };
   autoUpdater.on('error', (e) => updEvent('error', { message: friendlyUpdateError(e) }));

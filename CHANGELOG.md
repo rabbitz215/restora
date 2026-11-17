@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.7 — 2026-11-17
+- Clearer message when installing an update fails on Linux, including the command to install it yourself
+- Update activity is written to updater.log in Restora's settings folder, to make update problems easy to diagnose
+- An install error no longer shows as "Couldn't check for updates"
+
 ## 1.0.6 — 2026-11-17
 - Edit data right in the grid: double-click or just start typing, Enter to confirm, Esc to cancel
 - Select cells by dragging (or Shift+click / Shift+arrows), whole rows by dragging the row numbers
