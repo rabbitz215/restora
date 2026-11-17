@@ -1,0 +1,116 @@
+{
+  "name": "restora",
+  "version": "1.0.0",
+  "description": "A good-looking desktop client to restore, export, import and browse MySQL / MariaDB databases",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never",
+    "dist:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "csv-parse": "^7.0.3",
+    "mysql2": "^3.24.6"
+  },
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0"
+  },
+  "productName": "Restora",
+  "author": {
+    "name": "Galang Putra",
+    "email": "rabbitz215@users.noreply.github.com",
+    "url": "https://github.com/rabbitz215"
+  },
+  "build": {
+    "appId": "io.github.rabbitz215.restora",
+    "productName": "Restora",
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**",
+      "renderer/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icons",
+      "category": "Development",
+      "executableName": "restora",
+      "synopsis": "Restore, export and browse MySQL / MariaDB databases",
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "Restora",
+          "Keywords": "mysql;mariadb;database;restore;import;csv;sql;"
+        }
+      },
+      "syncDesktopName": true
+    },
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ],
+      "recommends": [
+        "mysql-client | mariadb-client"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "executableName": "Restora"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Restora",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "publish": null
+  },
+  "desktopName": "restora.desktop",
+  "homepage": "https://github.com/rabbitz215/restora",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rabbitz215/restora.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rabbitz215/restora/issues"
+  },
+  "keywords": [
+    "mysql",
+    "mariadb",
+    "restore",
+    "backup",
+    "mysqldump",
+    "database",
+    "electron",
+    "sql-client"
+  ]
+}
