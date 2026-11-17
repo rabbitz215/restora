@@ -31,7 +31,7 @@ function createWindow() {
   if (app.isPackaged) {
     win.webContents.on('before-input-event', (e, input) => {
       const k = String(input.key || '').toLowerCase(), mod = input.control || input.meta;
-      if (k === 'f12' || (mod && input.shift && (k === 'i' || k === 'j' || k === 'c')) || (mod && k === 'r')) e.preventDefault();
+      if (k === 'f12' || (mod && input.shift && (k === 'i' || k === 'j')) || (mod && k === 'r')) e.preventDefault();
     });
     win.webContents.on('devtools-opened', () => win.webContents.closeDevTools());
   }
@@ -88,6 +88,8 @@ app.whenReady().then(() => {
   handle('table:sql', (dbName, def) => db.createTableSql(dbName, def));
   handle('table:create', (id, dbName, def) => db.createTable(resolveConn(id), dbName, def));
   handle('db:objects', (id, name) => db.listObjects(resolveConn(id), name));
+  handle('data:preview', (id, dbName, table, changes) => db.previewEdits(resolveConn(id), dbName, table, changes));
+  handle('data:save', (id, dbName, table, changes) => db.saveEdits(resolveConn(id), dbName, table, changes));
   handle('data:browse', (id, name, table, q) => db.browse(resolveConn(id), name, table, q));
   handle('file:save', async ({ defaultPath, gzip }) => {
     const r = await dialog.showSaveDialog(win, { defaultPath, filters: [gzip ? { name: 'Compressed SQL', extensions: ['gz'] } : { name: 'SQL', extensions: ['sql'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] });

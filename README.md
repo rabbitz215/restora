@@ -72,7 +72,11 @@ and the `.deb` (which asks for your password to install). You can turn automatic
   Filter syntax: `text` contains · `=x` exact · `!x` not containing · `>5` `<=5` · `ab*` wildcard · `NULL` / `NOT NULL` · `EMPTY`.
 - Side panel: show/hide columns (remembered per table) and **relationships**, both what the table references and what references it.
   Click one to open the related table filtered to the selected row; foreign-key cells have a → button to jump to the referenced row.
-- Read-only by design. Double-click a cell for the full value (JSON is pretty-printed).
+- **Edit data like a spreadsheet**: double-click or start typing to edit, drag to select cells or rows, `Ctrl+0` sets NULL,
+  `Insert` adds a row, `Ctrl+Shift+C` clones, `Ctrl+Delete` deletes. Changes are highlighted until `Ctrl+S` saves them all
+  in one transaction (if anything fails, nothing is applied). Undo, revert, SQL preview and a right-click menu included.
+  Editing needs a primary key; tables without one and views stay read-only.
+- Ctrl+C copies the selected cells as tab-separated text; F3 opens the full value (JSON is pretty-printed).
 
 ### SQL editor
 - Query tabs next to your table tabs, with syntax highlighting and line numbers.
@@ -125,7 +129,12 @@ The sidebar footer shows whether the `mysql` client was found.
 | Data & SQL | `Ctrl+T` | New SQL query tab |
 | Data & SQL | `Ctrl+W` | Close tab (middle-click works too) |
 | Data & SQL | `Ctrl+Tab` | Next tab |
-| Data grid | `Ctrl+C` | Copy selected cell |
+| Data grid | `Ctrl+C` / `Ctrl+Shift+H` | Copy selection / with headers |
+| Data grid | double-click, `F2`, `Enter` or typing | Edit cell (`Enter` confirm, `Esc` cancel, `Tab` next) |
+| Data grid | `Ctrl+0` | Set selected cells to NULL |
+| Data grid | `Insert` / `Ctrl+Shift+C` / `Ctrl+Delete` | New row / clone rows / delete rows |
+| Data grid | `Ctrl+S` / `Ctrl+Z` / `Ctrl+U` | Save changes / undo / revert row |
+| Data grid | `Ctrl+Shift+F` / `Ctrl+H` / `F3` | Filter by value / hide column / open value |
 | Sidebar table search | `Enter` / `Esc` | Open first match / clear |
 
 ## Build from source

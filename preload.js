@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('api', {
   objects: (id, db) => call('db:objects', id, db),
   create: { collations: (id) => call('db:collations', id), database: (id, name, coll) => call('db:create', id, name, coll), tableSql: (db, def) => call('table:sql', db, def), table: (id, db, def) => call('table:create', id, db, def) },
   browse: (id, db, table, q) => call('data:browse', id, db, table, q),
+  previewEdits: (id, db, table, ch) => call('data:preview', id, db, table, ch),
+  saveEdits: (id, db, table, ch) => call('data:save', id, db, table, ch),
   saveFile: (o) => call('file:save', o),
   exists: (p) => call('file:exists', p),
   startExport: (o) => call('export:start', o),

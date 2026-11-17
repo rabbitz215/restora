@@ -822,7 +822,7 @@ async function startExport() {
 
 /* ================= DATA VIEWER ================= */
 let dvTimer = null;
-const newDv = (connId = null, db = null, table = null) => ({ key: JSON.stringify([connId, db, table]), connId, db, table, filters: {}, search: '', sort: [], offset: 0, limit: store.get('dv.limit', 200), data: null, loading: false, error: null, sel: null, seq: 0, scroll: null, refs: null, colSearch: '', refSearch: '', hidden: new Set(table ? store.get(`hide.${connId}.${db}.${table}`, []) : []) });
+const newDv = (connId = null, db = null, table = null) => ({ key: JSON.stringify([connId, db, table]), connId, db, table, filters: {}, search: '', sort: [], offset: 0, limit: store.get('dv.limit', 200), data: null, loading: false, error: null, sel: null, range: null, ch: { edits: {}, deletes: {}, inserts: [], undo: [] }, saving: false, seq: 0, scroll: null, refs: null, colSearch: '', refSearch: '', hidden: new Set(table ? store.get(`hide.${connId}.${db}.${table}`, []) : []) });
 const saveHidden = (d) => store.set(`hide.${d.connId}.${d.db}.${d.table}`, [...d.hidden]);
 let panelOpen = store.get('dv.panel', true);
 const fkOf = (d, col) => d.refs?.out.find((f) => f.columns.includes(col));
@@ -857,8 +857,9 @@ function openTable(connId, db, table, filters = null) {
   }
   activateTab(tab);
 }
-function closeTab(key) {
+async function closeTab(key) {
   const i = S.tabs.findIndex((t) => t.key === key); if (i < 0) return;
+  if (S.tabs[i].kind !== 'query' && hasChanges(S.tabs[i]) && !(await api.confirm({ title: 'Unsaved changes', message: `Close ${S.tabs[i].table} without saving?`, detail: 'Your edits to this table have not been saved and will be lost.', ok: 'Discard changes' }))) return;
   const [tab] = S.tabs.splice(i, 1);
   if (tab.kind === 'query') api.sql.close(tab.key).catch(() => {});
   if (S.dv === tab) {
@@ -888,7 +889,7 @@ function renderTabs() {
     return `<div class="tab-group ${act ? 'act' : ''}" style="--gc:${esc(c?.color || '#888')}">
       <span class="tg-label" title="${esc(c?.name || '')} / ${esc(g[0].db)}">${ic('db')}${multiConn ? `<span class="tg-conn">${esc(c?.name || '?')} /</span>` : ''}${esc(g[0].db)}${g.length > 1 ? `<button class="tg-x" data-act="tab-close-group" data-key="${esc(g[0].key)}" title="Close all ${g.length} tabs of ${esc(g[0].db)}">${ic('x')}</button>` : ''}</span>
       ${g.map((t) => `<div class="tab ${t === S.dv ? 'on' : ''} ${t.kind === 'query' ? 'qtab' : ''}" data-act="tab-open" data-key="${esc(t.key)}" title="${t.kind === 'query' ? `SQL query on ${esc(t.db || 'no database')}` : `${esc(t.db)}.${esc(t.table)}`}">
-        ${t.loading ? ic('loader', 'spin') : ic(t.kind === 'query' ? 'code' : 'table')}<span>${esc(t.kind === 'query' ? t.title : t.table)}</span>${Object.values(t.filters).some((v) => String(v).trim()) || t.search.trim() ? '<span class="tab-dot" title="Filtered"></span>' : ''}
+        ${t.loading ? ic('loader', 'spin') : ic(t.kind === 'query' ? 'code' : 'table')}<span>${esc(t.kind === 'query' ? t.title : t.table)}</span>${t.kind !== 'query' && hasChanges(t) ? '<span class="tab-unsaved" title="Unsaved changes">●</span>' : ''}${Object.values(t.filters).some((v) => String(v).trim()) || t.search.trim() ? '<span class="tab-dot" title="Filtered"></span>' : ''}
         <button class="tab-x" data-act="tab-close" data-key="${esc(t.key)}" title="Close (Ctrl+W)">${ic('x')}</button></div>`).join('')}
     </div>`;
   }).join('') + `<button class="tab-new" data-act="q-new" title="New SQL query (Ctrl+T)">${ic('plus')}<span>SQL</span></button>`;
@@ -924,7 +925,8 @@ function renderData() {
       <div class="spacer"></div>
       <div class="pager" id="dv-pager"></div>
     </div>
-    <div class="dv-grid ${d.loading ? 'loading' : ''}" id="dv-grid"><table class="grid"><thead id="dv-thead"></thead><tbody id="dv-tbody"></tbody></table><div id="dv-msg"></div></div>
+    <div class="dv-changes" id="dv-changes"></div>
+    <div class="dv-grid ${d.loading ? 'loading' : ''}" id="dv-grid" tabindex="-1"><table class="grid"><thead id="dv-thead"></thead><tbody id="dv-tbody"></tbody></table><div id="dv-msg"></div></div>
     <div class="dv-status" id="dv-status"></div>
     </div></div>
   </div>`;
@@ -1029,19 +1031,190 @@ function renderDataHead() {
 }
 
 const NUM_T = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|year|bit)$/;
-function cellHtml(v, c, r, ci) {
-  const sel = S.dv.sel && S.dv.sel.r === r && S.dv.sel.c === ci ? ' sel' : '';
-  if (v === null) return `<td class="null${sel}" data-r="${r}" data-c="${ci}">NULL</td>`;
-  if (typeof v === 'object' && v.bin != null) return `<td class="bin${sel}" data-r="${r}" data-c="${ci}">(${fmtBytes(v.bin)} binary)</td>`;
+const EMPTY_NULL_T = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|year|bit|date|datetime|timestamp|time)$/;
+const UNSET = Symbol('unset');
+
+/* ---- change tracking for the data grid ---- */
+const pkCols = (d) => (d.data ? d.data.columns.filter((c) => c.pk) : []);
+const canEdit = (d) => !!(d.data && d.kind !== 'query' && pkCols(d).length);
+const rowKeyObj = (d, row) => Object.fromEntries(d.data.columns.map((c, i) => [c, i]).filter(([c]) => c.pk).map(([c, i]) => [c.name, row[i]]));
+const rowKey = (d, row) => JSON.stringify(pkCols(d).map((c) => row[d.data.columns.indexOf(c)]));
+const nRows = (d) => (d.data ? d.data.rows.length + d.ch.inserts.length : 0);
+const isInsert = (d, r) => d.data && r >= d.data.rows.length;
+const hasChanges = (d) => !!(d && d.ch && (Object.keys(d.ch.edits).length || Object.keys(d.ch.deletes).length || d.ch.inserts.length));
+function changeCounts(d) {
+  const cells = Object.values(d.ch.edits).reduce((s, e) => s + Object.keys(e.set).length, 0);
+  return { cells, rows: Object.keys(d.ch.edits).length, deleted: Object.keys(d.ch.deletes).length, inserted: d.ch.inserts.length };
+}
+// Current value of a cell (edits applied). UNSET = new row cell left to its default.
+function cellAt(d, r, ci) {
+  const col = d.data.columns[ci];
+  if (isInsert(d, r)) { const ins = d.ch.inserts[r - d.data.rows.length]; return col.name in ins.values ? ins.values[col.name] : UNSET; }
+  const row = d.data.rows[r], e = d.ch.edits[rowKey(d, row)];
+  return e && col.name in e.set ? e.set[col.name] : row[ci];
+}
+const isChanged = (d, r, ci) => { if (isInsert(d, r)) return false; const e = d.ch.edits[rowKey(d, d.data.rows[r])]; return !!(e && d.data.columns[ci].name in e.set); };
+const isDeleted = (d, r) => !isInsert(d, r) && rowKey(d, d.data.rows[r]) in d.ch.deletes;
+const rowValues = (d, r) => d.data.columns.map((_, ci) => { const v = cellAt(d, r, ci); return v === UNSET ? null : v; });
+function snapshot(d) {
+  d.ch.undo.push(JSON.stringify({ edits: d.ch.edits, deletes: d.ch.deletes, inserts: d.ch.inserts }));
+  if (d.ch.undo.length > 200) d.ch.undo.shift();
+}
+function setCells(d, cells, value) {
+  if (!canEdit(d)) return noEditToast(d);
+  const ok = cells.filter(({ r, ci }) => { const v = isInsert(d, r) ? null : d.data.rows[r][ci]; return !(v && typeof v === 'object'); });
+  if (ok.length < cells.length) toast('Binary and very long values can only be changed with SQL');
+  if (!ok.length) return;
+  snapshot(d);
+  for (const { r, ci } of ok) {
+    const col = d.data.columns[ci];
+    if (isInsert(d, r)) { d.ch.inserts[r - d.data.rows.length].values[col.name] = value; continue; }
+    const row = d.data.rows[r], k = rowKey(d, row);
+    const e = d.ch.edits[k] || (d.ch.edits[k] = { key: rowKeyObj(d, row), set: {} });
+    const orig = row[ci];
+    if ((orig === null && value === null) || (orig !== null && value !== null && String(orig) === String(value))) delete e.set[col.name];
+    else e.set[col.name] = value;
+    if (!Object.keys(e.set).length) delete d.ch.edits[k];
+  }
+  afterChange(d);
+}
+function afterChange(d) { renderDataBody(); renderTabs(); renderChangesBar(); }
+function noEditToast(d) {
+  toast(d.data && !pkCols(d).length ? 'This table has no primary key, so its rows cannot be edited here. Use the SQL editor instead.' : 'This data cannot be edited');
+}
+const selRows = (d) => { if (!d.range) return d.sel ? [d.sel.r] : []; const out = []; for (let r = d.range.r1; r <= d.range.r2; r++) out.push(r); return out; };
+function selCells(d) {
+  if (!d.data) return [];
+  const vis = visibleCols(d);
+  if (!d.range) return d.sel ? [{ r: d.sel.r, ci: d.sel.c }] : [];
+  const out = [];
+  for (let r = d.range.r1; r <= d.range.r2; r++) for (let p = d.range.p1; p <= d.range.p2; p++) out.push({ r, ci: vis[p] });
+  return out;
+}
+const visibleCols = (d) => d.data.columns.map((c, i) => i).filter((i) => !d.hidden.has(d.data.columns[i].name));
+
+const gridOps = {
+  setNull(d) { const cells = selCells(d).filter(({ r }) => !isDeleted(d, r)); if (cells.length) setCells(d, cells, null); },
+  deleteRows(d) {
+    if (!canEdit(d)) return noEditToast(d);
+    const rows = [...new Set(selRows(d))]; if (!rows.length) return;
+    snapshot(d);
+    const insIdx = rows.filter((r) => isInsert(d, r)).map((r) => r - d.data.rows.length);
+    for (const r of rows) if (!isInsert(d, r)) { const row = d.data.rows[r], k = rowKey(d, row); if (k in d.ch.deletes) delete d.ch.deletes[k]; else d.ch.deletes[k] = rowKeyObj(d, row); }
+    d.ch.inserts = d.ch.inserts.filter((_, i) => !insIdx.includes(i));
+    d.range = null; if (d.sel && d.sel.r >= nRows(d)) d.sel = null;
+    afterChange(d);
+  },
+  newRow(d, clone = false) {
+    if (!canEdit(d)) return noEditToast(d);
+    snapshot(d);
+    const rows = clone ? [...new Set(selRows(d))] : [null];
+    for (const r of rows) {
+      const values = {};
+      if (r != null) d.data.columns.forEach((c, ci) => { if (c.auto) return; const v = cellAt(d, r, ci); if (v !== UNSET && !(v && typeof v === 'object')) values[c.name] = v; });
+      d.ch.inserts.push({ id: Date.now() + Math.random(), values });
+    }
+    const vis = visibleCols(d), r = nRows(d) - 1;
+    d.sel = { r, c: vis.find((ci) => !d.data.columns[ci].auto) ?? vis[0] }; d.range = null;
+    afterChange(d);
+    scrollToSel(d);
+  },
+  revertRows(d) {
+    const rows = [...new Set(selRows(d))]; if (!rows.length) return;
+    snapshot(d);
+    const insIdx = rows.filter((r) => isInsert(d, r)).map((r) => r - d.data.rows.length);
+    for (const r of rows) if (!isInsert(d, r)) { const k = rowKey(d, d.data.rows[r]); delete d.ch.edits[k]; delete d.ch.deletes[k]; }
+    d.ch.inserts = d.ch.inserts.filter((_, i) => !insIdx.includes(i));
+    if (d.sel && d.sel.r >= nRows(d)) d.sel = null;
+    afterChange(d);
+  },
+  revertAll(d) { if (!hasChanges(d)) return; snapshot(d); d.ch.edits = {}; d.ch.deletes = {}; d.ch.inserts = []; if (d.sel && d.sel.r >= nRows(d)) d.sel = null; afterChange(d); },
+  undo(d) {
+    const last = d.ch.undo.pop(); if (!last) return toast('Nothing to undo', 'ok');
+    Object.assign(d.ch, JSON.parse(last));
+    if (d.sel && d.sel.r >= nRows(d)) d.sel = null;
+    afterChange(d);
+  },
+  copy(d, headers = false) {
+    if (!d.data) return;
+    const vis = visibleCols(d);
+    const rr = d.range || (d.sel && { r1: d.sel.r, r2: d.sel.r, p1: vis.indexOf(d.sel.c), p2: vis.indexOf(d.sel.c) });
+    if (!rr) return;
+    const cell = (v) => (v === null || v === UNSET ? (v === null ? 'NULL' : '') : cellText(v)).replace(/[\t\n\r]+/g, ' ');
+    const lines = [];
+    if (headers) lines.push(vis.slice(rr.p1, rr.p2 + 1).map((ci) => d.data.columns[ci].name).join('\t'));
+    for (let r = rr.r1; r <= rr.r2; r++) lines.push(vis.slice(rr.p1, rr.p2 + 1).map((ci) => cell(cellAt(d, r, ci))).join('\t'));
+    navigator.clipboard.writeText(lines.join('\n'));
+    const n = (rr.r2 - rr.r1 + 1) * (rr.p2 - rr.p1 + 1);
+    toast(n === 1 ? 'Copied value' : `Copied ${fmtNum(n)} cells`, 'ok');
+  },
+  filterValue(d) {
+    if (!d.sel) return; const v = cellAt(d, d.sel.r, d.sel.c); const col = d.data.columns[d.sel.c];
+    if (v && typeof v === 'object') return toast("Can't filter by binary or very long values");
+    d.filters[col.name] = v === null || v === UNSET ? 'NULL' : '=' + v; d.offset = 0;
+    renderData(); fetchData();
+  },
+  hideColumn(d) { if (!d.sel) return; const name = d.data.columns[d.sel.c].name; if (visibleCols(d).length < 2) return; d.hidden.add(name); saveHidden(d); d.sel = null; d.range = null; refreshCols(); },
+  async showSql(d) {
+    if (!hasChanges(d)) return toast('No pending changes', 'ok');
+    let lines;
+    try { lines = await api.previewEdits(d.connId, d.db, d.table, changesPayload(d)); } catch (e) { return toast(e.message); }
+    showValue('Pending changes', `${lines.length} statement${lines.length === 1 ? '' : 's'} · run in one transaction on save`, lines.join(';\n') + ';');
+  },
+  async save(d) {
+    if (!hasChanges(d) || d.saving) return;
+    if (!canEdit(d)) return noEditToast(d);
+    d.saving = true; renderChangesBar();
+    try {
+      const r = await api.saveEdits(d.connId, d.db, d.table, changesPayload(d));
+      d.ch = { edits: {}, deletes: {}, inserts: [], undo: [] };
+      toast(`Saved ${[r.updated && plural(r.updated, 'update'), r.deleted && plural(r.deleted, 'delete'), r.inserted && plural(r.inserted, 'insert')].filter(Boolean).join(', ')}`, 'ok');
+      d.saving = false; renderTabs(); renderChangesBar();
+      fetchData(d);
+    } catch (e) {
+      d.saving = false; renderChangesBar();
+      showValue('Changes were not saved', 'Nothing was applied: the whole save was rolled back. Fix the value and press Ctrl+S again.', e.message);
+    }
+  },
+};
+const changesPayload = (d) => ({ updates: Object.values(d.ch.edits), deletes: Object.values(d.ch.deletes).map((key) => ({ key })), inserts: d.ch.inserts.map((i) => ({ values: i.values })) });
+
+function renderChangesBar() {
+  const d = S.dv, el = $('#dv-changes'); if (!el) return;
+  if (!d.data || !hasChanges(d)) { el.innerHTML = ''; el.classList.remove('on'); return; }
+  const n = changeCounts(d);
+  el.classList.add('on');
+  el.innerHTML = `${ic('pencil')}<span class="dvc-text"><b>Unsaved</b> ${[n.cells && plural(n.cells, 'edit'), n.inserted && `${fmtNum(n.inserted)} new`, n.deleted && `${fmtNum(n.deleted)} deleted`].filter(Boolean).join(' · ')}</span>
+    <div class="spacer"></div>
+    <button class="btn sm ghost" data-act="g-sql">${ic('code')}Show SQL</button>
+    <button class="btn sm ghost" data-act="g-undo" title="Ctrl+Z">${ic('retry')}Undo</button>
+    <button class="btn sm ghost" data-act="g-revert-all">${ic('x')}Revert all</button>
+    <button class="btn sm primary" data-act="g-save" ${d.saving ? 'disabled' : ''}>${d.saving ? ic('loader', 'spin') + 'Saving…' : ic('check') + 'Save <kbd>Ctrl+S</kbd>'}</button>`;
+}
+
+function cellHtml(v, c, r, ci, flags = {}) {
+  const d = S.dv;
+  const cls = [flags.changed && 'chg', d.sel && d.sel.r === r && d.sel.c === ci && 'sel', inRange(d, r, ci) && 'in-range'].filter(Boolean).join(' ');
+  const attrs = `data-r="${r}" data-c="${ci}"`;
+  if (v === UNSET) return `<td class="unset ${cls}" ${attrs}>${c.auto ? '(auto)' : '(default)'}</td>`;
+  if (v === null) return `<td class="null ${cls}" ${attrs}>NULL</td>`;
+  if (typeof v === 'object' && v.bin != null) return `<td class="bin ${cls}" ${attrs}>(${fmtBytes(v.bin)} binary)</td>`;
   const s = typeof v === 'object' ? v.text + '…' : String(v);
   const short = s.length > 200 ? s.slice(0, 200) + '…' : s;
-  const fk = fkOf(S.dv, c.name);
-  const go = fk && fk.columns.length === 1 ? `<button class="fk-go" data-act="dv-follow" data-r="${r}" data-c="${ci}" title="Open the ${esc(fk.refTable)} row with ${esc(fk.refColumns[0])} = ${esc(short)}">${ic('arrowUpRight')}</button>` : '';
-  return `<td class="${NUM_T.test(c.dataType) ? 'num' : ''}${fk ? ' fkc' : ''}${sel}" data-r="${r}" data-c="${ci}">${go}${esc(short.replace(/\s+/g, ' '))}</td>`;
+  const fk = fkOf(d, c.name);
+  const go = fk && fk.columns.length === 1 && !flags.insert ? `<button class="fk-go" data-act="dv-follow" data-r="${r}" data-c="${ci}" title="Open the ${esc(fk.refTable)} row with ${esc(fk.refColumns[0])} = ${esc(short)}">${ic('arrowUpRight')}</button>` : '';
+  return `<td class="${NUM_T.test(c.dataType) ? 'num' : ''}${fk ? ' fkc' : ''} ${cls}" ${attrs}>${go}${esc(short.replace(/\s+/g, ' '))}</td>`;
+}
+function inRange(d, r, ci) {
+  const g = d.range; if (!g) return false;
+  if (r < g.r1 || r > g.r2) return false;
+  const p = visibleCols(d).indexOf(ci);
+  return p >= g.p1 && p <= g.p2;
 }
 
 function renderDataBody() {
   const d = S.dv;
+  if (gridEditor) { const ed = gridEditor; gridEditor = null; ed.inp.remove(); }
   const grid = $('#dv-grid'); if (!grid) return;
   grid.classList.toggle('loading', d.loading);
   const msg = $('#dv-msg');
@@ -1052,11 +1225,136 @@ function renderDataBody() {
     msg.innerHTML = '<div style="padding:12px">' + '<div class="skeleton"></div>'.repeat(8) + '</div>';
   } else {
     const { columns, rows, offset } = d.data;
-    $('#dv-tbody').innerHTML = rows.map((row, ri) => `<tr><td class="rn">${fmtNum(offset + ri + 1)}</td>${row.map((v, ci) => (d.hidden.has(columns[ci].name) ? '' : cellHtml(v, columns[ci], ri, ci))).join('')}</tr>`).join('');
-    msg.innerHTML = rows.length ? '' : `<div class="dv-none">${ic('search')}<b>No rows</b><span>${Object.values(d.filters).some((v) => String(v).trim()) || d.search.trim() ? 'Nothing matches your filters.' : 'This table is empty.'}</span></div>`;
+    const vis = visibleCols(d);
+    const rowHtml = (r) => {
+      const ins = isInsert(d, r), del = !ins && isDeleted(d, r);
+      const rowSel = d.range && r >= d.range.r1 && r <= d.range.r2 && d.range.p1 === 0 && d.range.p2 === vis.length - 1;
+      return `<tr class="${ins ? 'ins' : ''}${del ? ' del' : ''}${rowSel ? ' row-sel' : ''}"><td class="rn" data-rn="${r}">${ins ? '+' : fmtNum(offset + r + 1)}</td>${vis.map((ci) => cellHtml(cellAt(d, r, ci), columns[ci], r, ci, { changed: isChanged(d, r, ci), insert: ins })).join('')}</tr>`;
+    };
+    const all = [];
+    for (let r = 0; r < nRows(d); r++) all.push(rowHtml(r));
+    $('#dv-tbody').innerHTML = all.join('');
+    msg.innerHTML = nRows(d) ? '' : `<div class="dv-none">${ic('search')}<b>No rows</b><span>${Object.values(d.filters).some((v) => String(v).trim()) || d.search.trim() ? 'Nothing matches your filters.' : 'This table is empty.'}${canEdit(d) ? ' Press <kbd>Insert</kbd> to add a row.' : ''}</span></div>`;
   }
-  renderPager(); renderDataStatus();
+  renderPager(); renderDataStatus(); renderChangesBar();
 }
+
+// Update selection classes without re-rendering the grid.
+function paintSelection() {
+  const d = S.dv, tb = $('#dv-tbody'); if (!tb || !d.data) return;
+  const vis = visibleCols(d);
+  for (const tr of tb.rows) {
+    const r = Number(tr.cells[0]?.dataset.rn);
+    tr.classList.toggle('row-sel', !!(d.range && r >= d.range.r1 && r <= d.range.r2 && d.range.p1 === 0 && d.range.p2 === vis.length - 1));
+    for (let k = 1; k < tr.cells.length; k++) {
+      const td = tr.cells[k], ci = Number(td.dataset.c);
+      td.classList.toggle('sel', !!(d.sel && d.sel.r === r && d.sel.c === ci));
+      td.classList.toggle('in-range', inRange(d, r, ci));
+    }
+  }
+  renderDataStatus();
+  const rl = $('#dv-reflist'); if (rl) rl.innerHTML = refListHtml();
+}
+function scrollToSel(d) {
+  if (!d.sel) return;
+  const td = $(`#dv-tbody td[data-r="${d.sel.r}"][data-c="${d.sel.c}"]`);
+  td?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+/* ---- selection + inline editing ---- */
+let gridDrag = null, gridEditor = null;
+function selectTo(d, r, ci, extend) {
+  const vis = visibleCols(d);
+  if (!extend || !d.anchor) { d.anchor = { r, p: vis.indexOf(ci) }; d.range = null; }
+  else {
+    const p = vis.indexOf(ci);
+    d.range = { r1: Math.min(d.anchor.r, r), r2: Math.max(d.anchor.r, r), p1: Math.min(d.anchor.p, p), p2: Math.max(d.anchor.p, p) };
+    if (d.range.r1 === d.range.r2 && d.range.p1 === d.range.p2) d.range = null;
+  }
+  d.sel = { r, c: ci };
+  paintSelection();
+}
+function selectRows(d, r1, r2) {
+  const vis = visibleCols(d);
+  d.range = { r1: Math.min(r1, r2), r2: Math.max(r1, r2), p1: 0, p2: vis.length - 1 };
+  d.sel = { r: r2, c: vis[0] };
+  paintSelection();
+}
+function startEdit(d, initial) {
+  if (!d.sel || !d.data) return;
+  if (!canEdit(d)) return noEditToast(d);
+  const { r, c: ci } = d.sel;
+  if (isDeleted(d, r)) return toast('This row is marked for deletion. Revert it first (Ctrl+U).');
+  const cur = cellAt(d, r, ci);
+  if (cur && typeof cur === 'object') return toast('Binary and very long values can only be changed with SQL');
+  const td = $(`#dv-tbody td[data-r="${r}"][data-c="${ci}"]`); if (!td) return;
+  closeEditor(false);
+  const box = td.getBoundingClientRect(), grid = $('#dv-grid'), gb = grid.getBoundingClientRect();
+  const inp = document.createElement('input');
+  inp.className = 'cell-editor mono';
+  inp.value = initial != null ? initial : cur === null || cur === UNSET ? '' : String(cur);
+  inp.placeholder = cur === null ? 'NULL' : '';
+  Object.assign(inp.style, { left: box.left - gb.left + grid.scrollLeft + 'px', top: box.top - gb.top + grid.scrollTop + 'px', width: Math.max(box.width, 140) + 'px', height: box.height + 'px' });
+  grid.appendChild(inp);
+  gridEditor = { d, r, ci, inp, orig: cur };
+  inp.focus();
+  if (initial == null) inp.select(); else inp.setSelectionRange(inp.value.length, inp.value.length);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeEditor(false); $('#dv-grid').focus(); }
+    else if (e.key === 'Enter') { e.preventDefault(); closeEditor(true); moveSel(d, 1, 0); }
+    else if (e.key === 'Tab') { e.preventDefault(); closeEditor(true); moveSel(d, 0, e.shiftKey ? -1 : 1); }
+    else if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); closeEditor(false); setCells(d, [{ r, ci }], null); $('#dv-grid').focus(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); closeEditor(true); gridOps.save(d); }
+    e.stopPropagation();
+  });
+  inp.addEventListener('blur', () => { if (gridEditor && gridEditor.inp === inp) closeEditor(true); });
+}
+function closeEditor(commit) {
+  const ed = gridEditor; if (!ed) return;
+  gridEditor = null;
+  const { d, r, ci, inp, orig } = ed;
+  const col = d.data.columns[ci];
+  let v = inp.value;
+  inp.remove();
+  if (!commit) return;
+  if (v === '' && (orig === null || orig === UNSET) ) return; // left empty: keep NULL / default
+  if (v === '' && EMPTY_NULL_T.test(col.dataType) && col.nullable) v = null;
+  if (orig !== UNSET && ((orig === null && v === null) || (orig !== null && v !== null && String(orig) === v))) return;
+  setCells(d, [{ r, ci }], v);
+  $('#dv-grid')?.focus();
+}
+function moveSel(d, dr, dp, extend = false) {
+  if (!d.data) return;
+  const vis = visibleCols(d);
+  if (!d.sel) { selectTo(d, 0, vis[0], false); return; }
+  const base = extend && d.range ? { r: d.sel.r, p: vis.indexOf(d.sel.c) } : { r: d.sel.r, p: vis.indexOf(d.sel.c) };
+  const r = Math.max(0, Math.min(nRows(d) - 1, base.r + dr)), p = Math.max(0, Math.min(vis.length - 1, base.p + dp));
+  selectTo(d, r, vis[p], extend);
+  scrollToSel(d);
+}
+
+/* ---- right-click menu ---- */
+function gridMenu(x, y) {
+  const d = S.dv, ed = canEdit(d), sel = !!d.sel, rows = selRows(d).length;
+  const item = (act, label, keys, enabled = true) => `<button class="cm-item" data-act="${act}" ${enabled ? '' : 'disabled'}><span>${label}</span><kbd>${keys}</kbd></button>`;
+  const m = $('#ctxMenu');
+  m.innerHTML = [
+    item('g-copy', 'Copy', 'Ctrl+C', sel), item('g-copy-h', 'Copy with headers', 'Ctrl+Shift+H', sel),
+    '<hr>',
+    item('g-edit', 'Edit cell', 'F2', ed && sel), item('g-null', 'Set NULL', 'Ctrl+0', ed && sel),
+    item('g-new', 'New row', 'Insert', ed), item('g-clone', `Clone ${rows > 1 ? plural(rows, 'row') : 'row'}`, 'Ctrl+Shift+C', ed && sel), item('g-del', `Delete ${rows > 1 ? plural(rows, 'row') : 'row'}`, 'Ctrl+Delete', ed && sel),
+    '<hr>',
+    item('g-revert-row', 'Revert row changes', 'Ctrl+U', sel && hasChanges(d)), item('g-revert-all', 'Revert all', '', hasChanges(d)), item('g-undo', 'Undo', 'Ctrl+Z', d.ch.undo.length > 0),
+    item('g-save', 'Save changes', 'Ctrl+S', hasChanges(d)), item('g-sql', 'Show SQL', '', hasChanges(d)),
+    '<hr>',
+    item('g-filter', 'Filter by this value', 'Ctrl+Shift+F', sel), item('g-hide', 'Hide column', 'Ctrl+H', sel), item('dv-expand', 'Open value', 'F3', sel),
+  ].join('') + (ed ? '' : `<div class="cm-note">${ic('info')}${d.data && !pkCols(d).length ? 'Read-only: this table has no primary key' : 'Read-only'}</div>`);
+  m.style.display = 'block';
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(y, innerHeight - h - 8) + 'px';
+}
+const closeMenu = () => { const m = $('#ctxMenu'); if (m) m.style.display = 'none'; };
 
 function renderPager() {
   const d = S.dv, el = $('#dv-pager'); if (!el) return;
@@ -1077,9 +1375,11 @@ function renderDataStatus() {
   const d = S.dv, el = $('#dv-status'); if (!el) return;
   const x = d.data;
   let left = '<span class="muted">Click a cell to inspect it, double-click to open the full value</span>';
-  if (x && d.sel && x.rows[d.sel.r]) {
-    const c = x.columns[d.sel.c], v = x.rows[d.sel.r][d.sel.c];
-    left = `<b class="mono">${esc(c.name)}</b><span class="val mono">${v === null ? '<i>NULL</i>' : esc(cellText(v).slice(0, 300))}</span><button class="btn sm ghost" data-act="dv-copy">${ic('copy')}Copy</button><button class="btn sm ghost" data-act="dv-expand">${ic('maximize')}Open</button>`;
+  if (x && canEdit(d) && !d.sel) left = '<span class="muted">Double-click or type to edit · Ctrl+0 NULL · Insert new row · Ctrl+Delete delete · Ctrl+S save · right-click for more</span>';
+  if (x && d.sel && d.sel.r < nRows(d)) {
+    const c = x.columns[d.sel.c], v0 = cellAt(d, d.sel.r, d.sel.c), v = v0 === UNSET ? null : v0;
+    const nSel = d.range ? (d.range.r2 - d.range.r1 + 1) * (d.range.p2 - d.range.p1 + 1) : 1;
+    left = `${nSel > 1 ? `<span class="chip accent">${fmtNum(nSel)} cells</span>` : ''}<b class="mono">${esc(c.name)}</b><span class="val mono">${v0 === UNSET ? '<i>default</i>' : v === null ? '<i>NULL</i>' : esc(cellText(v).slice(0, 300))}</span><button class="btn sm ghost" data-act="dv-copy">${ic('copy')}Copy</button><button class="btn sm ghost" data-act="dv-expand">${ic('maximize')}Open</button>`;
   }
   el.innerHTML = `<div class="left">${left}</div>${x ? `<div class="right"><span class="sql mono" title="${esc(x.sql)}" data-act="dv-copysql">${ic('code')}${esc(x.sql)}</span><span class="muted">${x.ms} ms</span></div>` : ''}`;
 }
@@ -1098,7 +1398,7 @@ async function fetchData(d = S.dv) {
     const colsChanged = !d.data || d.data.columns.map((c) => c.name).join('\0') !== res.columns.map((c) => c.name).join('\0');
     const gotRefs = res.refs && !d.refs;
     if (res.refs) d.refs = res.refs;
-    d.data = res; d.sel = null; d.scroll = null;
+    d.data = res; d.sel = null; d.range = null; d.anchor = null; d.scroll = null;
     if ((colsChanged || gotRefs) && isActive()) { renderDataHead(); renderSide(); }
     const g = $('#dv-grid'); if (g && isActive()) g.scrollTop = 0;
   } catch (e) {
@@ -1113,8 +1413,8 @@ async function fetchData(d = S.dv) {
 const fetchDataSoon = () => { const d = S.dv; clearTimeout(dvTimer); dvTimer = setTimeout(() => { d.offset = 0; fetchData(d); }, 380); };
 
 function openValue() {
-  const d = S.dv, x = d.data; if (!x || !d.sel) return;
-  const c = x.columns[d.sel.c], v = x.rows[d.sel.r][d.sel.c];
+  const d = S.dv, x = d.data; if (!x || !d.sel || d.sel.r >= nRows(d)) return;
+  const c = x.columns[d.sel.c], v0 = cellAt(d, d.sel.r, d.sel.c), v = v0 === UNSET ? null : v0;
   showValue(c.name, `${c.type} · row ${fmtNum(x.offset + d.sel.r + 1)}`, v);
 }
 function showValue(name, sub, v) {
@@ -2132,7 +2432,7 @@ const actions = {
     await selectExportConn(connId, db);
     if (S.e.db === db && Array.isArray(S.e.objects)) { S.e.selected = new Set([table]); renderExportTables(); renderExportOptions(); }
   },
-  'dv-copy': () => { const d = S.dv; if (!d.data || !d.sel) return; navigator.clipboard.writeText(cellText(d.data.rows[d.sel.r][d.sel.c])); toast('Copied value', 'ok'); },
+  'dv-copy': () => { const d = S.dv; if (!d.data || !d.sel) return; if (d.kind !== 'query') return gridOps.copy(d); navigator.clipboard.writeText(cellText(d.data.rows[d.sel.r][d.sel.c])); toast('Copied value', 'ok'); },
   'dv-expand': () => openValue(),
   'dv-panel': () => { rememberScroll(); panelOpen = !panelOpen; store.set('dv.panel', panelOpen); renderData(); },
   'dv-cols': (el) => { const d = S.dv; for (const c of colMatches(d)) { if (el.dataset.show === '1') d.hidden.delete(c.name); else d.hidden.add(c.name); } if (d.data && d.hidden.size >= d.data.columns.length) { d.hidden.delete(d.data.columns[0].name); toast('Kept one column visible', 'ok'); } saveHidden(d); refreshCols(); },
@@ -2142,7 +2442,7 @@ const actions = {
     const th = [...document.querySelectorAll('#dv-thead th.h')].find((x) => x.dataset.col === col);
     if (th) { th.scrollIntoView({ inline: 'center', block: 'nearest' }); th.classList.remove('flash'); void th.offsetWidth; th.classList.add('flash'); }
   },
-  'dv-ref': (el) => { const d = S.dv; const fk = d.refs[el.dataset.dir][Number(el.dataset.i)]; followRef(el.dataset.dir, fk, d.sel ? d.data.rows[d.sel.r] : null); },
+  'dv-ref': (el) => { const d = S.dv; const fk = d.refs[el.dataset.dir][Number(el.dataset.i)]; followRef(el.dataset.dir, fk, d.sel && d.sel.r < nRows(d) ? rowValues(d, d.sel.r) : null); },
   'dv-follow': (el) => { const d = S.dv; const c = d.data.columns[Number(el.dataset.c)]; followRef('out', fkOf(d, c.name), d.data.rows[Number(el.dataset.r)]); },
   'q-new': () => { const d = S.dv; openQuery(d.connId || null, d.db || null); },
   'tree-query': (el) => openQuery(el.dataset.id, el.dataset.db),
@@ -2188,6 +2488,20 @@ const actions = {
     const dark = Theme.current.mode !== 'light', grad = Math.random() > 0.3;
     editTheme({ accent: hsl(h, 0.85, 0.62), accent2: grad ? hsl((h + 40 + Math.random() * 120) % 360, 0.85, 0.6) : null, mid: null, bg: dark ? hsl(h, 0.35, 0.05) : hsl(h, 0.5, 0.97), text: dark ? hsl(h, 0.2, 0.92) : hsl(h, 0.25, 0.12), glow: dark && Math.random() > 0.3 });
   },
+  'g-copy': () => { closeMenu(); gridOps.copy(S.dv); },
+  'g-copy-h': () => { closeMenu(); gridOps.copy(S.dv, true); },
+  'g-edit': () => { closeMenu(); startEdit(S.dv); },
+  'g-null': () => { closeMenu(); gridOps.setNull(S.dv); },
+  'g-new': () => { closeMenu(); gridOps.newRow(S.dv); },
+  'g-clone': () => { closeMenu(); gridOps.newRow(S.dv, true); },
+  'g-del': () => { closeMenu(); gridOps.deleteRows(S.dv); },
+  'g-revert-row': () => { closeMenu(); gridOps.revertRows(S.dv); },
+  'g-revert-all': async () => { closeMenu(); const d = S.dv; if (await api.confirm({ title: 'Revert all', message: 'Discard all unsaved changes in this table?', detail: 'Edited cells, new rows and rows marked for deletion go back to how they are in the database.', ok: 'Revert all' })) gridOps.revertAll(d); },
+  'g-undo': () => { closeMenu(); gridOps.undo(S.dv); },
+  'g-save': () => { closeMenu(); gridOps.save(S.dv); },
+  'g-sql': () => { closeMenu(); gridOps.showSql(S.dv); },
+  'g-filter': () => { closeMenu(); gridOps.filterValue(S.dv); },
+  'g-hide': () => { closeMenu(); gridOps.hideColumn(S.dv); },
   'tab-open': (el) => { const t = S.tabs.find((x) => x.key === el.dataset.key); if (t && t !== S.dv) activateTab(t); },
   'tab-close': (el, ev) => { ev.stopPropagation(); closeTab(el.dataset.key); },
   'tab-close-group': (el, ev) => { ev.stopPropagation(); const g = S.tabs.find((x) => x.key === el.dataset.key); if (g) closeTabs((t) => sameGroup(t, g)); },
@@ -2324,15 +2638,8 @@ document.addEventListener('click', (e) => {
     $('#q-status').innerHTML = qStatusHtml(S.dv);
     return;
   }
-  const td = !e.target.closest('.fk-go') && e.target.closest('#dv-tbody td[data-r]');
-  if (td) {
-    $('#dv-tbody td.sel')?.classList.remove('sel');
-    td.classList.add('sel');
-    S.dv.sel = { r: Number(td.dataset.r), c: Number(td.dataset.c) };
-    renderDataStatus();
-    const rl = $('#dv-reflist'); if (rl) rl.innerHTML = refListHtml();
-    return;
-  }
+  if (!e.target.closest('#ctxMenu')) closeMenu();
+  if (!e.target.closest('.fk-go') && e.target.closest('#dv-tbody td')) return; // handled by mousedown
   const el = e.target.closest('[data-act]');
   if (!el || el.hasAttribute('disabled')) return;
   if (el.tagName === 'A') e.preventDefault();
@@ -2352,7 +2659,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && $('#connDialog').open && e.target.tagName === 'INPUT') actions['dlg-save']();
   if (e.key === 'Enter' && /^dv-(filter|search)$/.test(e.target.dataset?.input || '')) { clearTimeout(dvTimer); S.dv.offset = 0; fetchData(); }
-  if (S.view === 'data' && S.dv.sel && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName) && !String(window.getSelection())) { e.preventDefault(); actions['dv-copy'](); }
+
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.dataset?.input === 'tree-tfilter') {
@@ -2369,7 +2676,77 @@ document.addEventListener('keydown', (e) => {
 });
 // Middle-click closes a tab.
 document.addEventListener('auxclick', (e) => { const t = e.button === 1 && e.target.closest('.tab[data-key]'); if (t) { e.preventDefault(); closeTab(t.dataset.key); } });
-document.addEventListener('dblclick', (e) => { if (e.target.closest('#dv-tbody td[data-r]')) openValue(); if (e.target.closest('#q-tbody td[data-qr]')) actions['q-expand'](); });
+// Data grid: drag to select cells, drag row numbers to select rows.
+document.addEventListener('mousedown', (e) => {
+  const d = S.dv;
+  if (e.button === 2 || !d.data || S.view !== 'data' || d.kind === 'query') return;
+  if (e.target.closest('.fk-go') || e.target.closest('.cell-editor')) return;
+  const rn = e.target.closest('#dv-tbody td.rn');
+  const td = !rn && e.target.closest('#dv-tbody td[data-r]');
+  if (!rn && !td) return;
+  if (gridEditor) closeEditor(true);
+  e.preventDefault();
+  $('#dv-grid').focus({ preventScroll: true });
+  if (rn) {
+    const r = Number(rn.dataset.rn);
+    const from = e.shiftKey && d.range ? (d.range.r1 === r ? d.range.r2 : d.range.r1) : r;
+    selectRows(d, from, r);
+    gridDrag = { rows: true, from };
+  } else {
+    selectTo(d, Number(td.dataset.r), Number(td.dataset.c), e.shiftKey);
+    gridDrag = { rows: false };
+  }
+});
+document.addEventListener('mouseover', (e) => {
+  if (!gridDrag || !(e.buttons & 1)) { gridDrag = null; return; }
+  const d = S.dv;
+  if (gridDrag.rows) { const rn = e.target.closest('#dv-tbody tr'); if (rn) selectRows(d, gridDrag.from, Number(rn.cells[0].dataset.rn)); return; }
+  const td = e.target.closest('#dv-tbody td[data-r]');
+  if (td) selectTo(d, Number(td.dataset.r), Number(td.dataset.c), true);
+});
+document.addEventListener('mouseup', () => { gridDrag = null; });
+document.addEventListener('contextmenu', (e) => {
+  const d = S.dv;
+  const td = e.target.closest('#dv-tbody td[data-r]'), rn = e.target.closest('#dv-tbody td.rn');
+  if ((!td && !rn) || !d.data || d.kind === 'query') { closeMenu(); return; }
+  e.preventDefault();
+  if (rn) { const r = Number(rn.dataset.rn); if (!d.range || r < d.range.r1 || r > d.range.r2) selectRows(d, r, r); }
+  else { const r = Number(td.dataset.r), ci = Number(td.dataset.c); if (!inRange(d, r, ci) && !(d.sel && d.sel.r === r && d.sel.c === ci)) selectTo(d, r, ci, false); }
+  gridMenu(e.clientX, e.clientY);
+});
+document.addEventListener('scroll', closeMenu, true);
+// Data grid keyboard: editing, NULL, rows, save, undo, copy, navigation.
+document.addEventListener('keydown', (e) => {
+  const d = S.dv;
+  if (e.key === 'Escape') closeMenu();
+  if (S.view !== 'data' || !d.data || d.kind === 'query' || gridEditor) return;
+  if (document.querySelector('dialog[open]')) return;
+  const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  const take = (fn) => { e.preventDefault(); e.stopPropagation(); fn(); };
+  if (mod && k === 's') return take(() => gridOps.save(d));
+  const tag = document.activeElement?.tagName;
+  if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+  if (mod && k === 'z') return take(() => gridOps.undo(d));
+  if (mod && e.key === '0') return take(() => gridOps.setNull(d));
+  if (mod && (e.key === 'Delete' || e.key === 'Backspace')) return take(() => gridOps.deleteRows(d));
+  if (e.key === 'Insert') return take(() => gridOps.newRow(d));
+  if (mod && e.shiftKey && k === 'c') return take(() => gridOps.newRow(d, true));
+  if (mod && e.shiftKey && k === 'h') return take(() => gridOps.copy(d, true));
+  if (mod && e.shiftKey && k === 'f') return take(() => gridOps.filterValue(d));
+  if (mod && k === 'u') return take(() => gridOps.revertRows(d));
+  if (mod && k === 'h') return take(() => gridOps.hideColumn(d));
+  if (mod && k === 'c' && !String(window.getSelection())) return take(() => gridOps.copy(d));
+  if (mod && k === 'a') return take(() => { const vis = visibleCols(d); if (!nRows(d)) return; d.range = { r1: 0, r2: nRows(d) - 1, p1: 0, p2: vis.length - 1 }; d.sel = d.sel || { r: 0, c: vis[0] }; paintSelection(); });
+  if (e.key === 'F3') return take(() => openValue());
+  if (!d.sel) { if (/^Arrow/.test(e.key)) take(() => moveSel(d, 0, 0)); return; }
+  const arrows = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+  if (arrows[e.key]) return take(() => moveSel(d, arrows[e.key][0], arrows[e.key][1], e.shiftKey));
+  if (e.key === 'Tab') return take(() => moveSel(d, 0, e.shiftKey ? -1 : 1));
+  if (e.key === 'Enter' || e.key === 'F2') return take(() => startEdit(d));
+  if (e.key === 'Escape' && d.range) return take(() => { d.range = null; paintSelection(); });
+  if (!mod && !e.altKey && e.key.length === 1) return take(() => startEdit(d, e.key));
+}, true);
+document.addEventListener('dblclick', (e) => { const td = e.target.closest('#dv-tbody td[data-r]'); if (td) { if (canEdit(S.dv)) startEdit(S.dv); else openValue(); } if (e.target.closest('#q-tbody td[data-qr]')) actions['q-expand'](); });
 $('#newsDialog').addEventListener('click', (e) => { if (e.target.id === 'newsDialog') e.target.close(); });
 $('#createDialog').addEventListener('click', (e) => { if (e.target.id === 'createDialog') { e.target.close(); CT = null; } });
 $('#createDialog').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'ct-name') { e.preventDefault(); createIt(); } });
