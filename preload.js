@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   scp: { list: (o) => call('scp:list', o), fetch: (o) => call('scp:start', o) },
   pickDir: (d) => call('dir:pick', d),
   setWindowBg: (c) => ipcRenderer.invoke('theme:bg', c),
+  changelog: () => call('app:changelog'),
   update: {
     state: () => call('update:state'), check: () => call('update:check'), download: () => call('update:download'), install: () => call('update:install'),
     on: (fn) => { const h = (_e, m) => fn(m); ipcRenderer.on('update:event', h); return () => ipcRenderer.removeListener('update:event', h); },

@@ -48,22 +48,31 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## /{p = ($2 == v || $2 == "v" v); next} p' CHANGELOG.md | sed '/^[[:space:]]*$/d' > notes.md
+          [ -s notes.md ] || echo "- Maintenance release" > notes.md
+          {
+            echo "## What's new"; cat notes.md; echo
+            echo "## Downloads"
+            echo "| Platform | File |"
+            echo "| --- | --- |"
+            echo "| Windows 10/11 (x64) | \`Restora-Setup-$v.exe\` (installer) |"
+            echo "| Linux (any distro) | \`Restora-$v-x86_64.AppImage\` |"
+            echo "| Debian / Ubuntu | \`Restora-$v-amd64.deb\` |"
+            echo
+            echo "Already installed? Restora updates itself: use **Update** at the bottom of the sidebar."
+            echo "Restores and exports need the MySQL client tools (\`mysql\`, \`mysqldump\`); see the README."
+            echo "Windows builds are not code-signed: on the SmartScreen prompt choose **More info → Run anyway**."
+          } > body.md
+          cat body.md
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          generate_release_notes: true
-          body: |
-            ## Downloads
-            | Platform | File |
-            | --- | --- |
-            | Windows 10/11 (x64) | `Restora-Setup-*.exe` (installer) |
-            | Linux (any distro) | `Restora-*-x86_64.AppImage` |
-            | Debian / Ubuntu | `Restora-*-amd64.deb` |
-
-            Restores and exports need the MySQL client tools (`mysql`, `mysqldump`). See the README for setup.
-            Windows builds are not code-signed: on the SmartScreen prompt choose **More info → Run anyway**.
-            From v1.0.2 on, Restora updates itself: use **Update** at the bottom of the sidebar.
+          body_path: body.md

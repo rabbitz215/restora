@@ -835,3 +835,14 @@ body.resizing * { user-select: none !important; }
 .ct-sql { margin: 0; max-height: 190px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); font: 12px/1.6 var(--mono); white-space: pre; user-select: text; }
 .ct-sql-err { display: flex; align-items: center; gap: 8px; color: var(--danger); font-family: var(--font); white-space: normal; }
 .ct-modal .modal-foot .muted { max-width: 380px; }
+
+/* ---------- What's new ---------- */
+.news-modal { width: 540px; }
+.news-body { max-height: 56vh; overflow: auto; gap: 18px; }
+.news-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.news-head small { color: var(--muted); font-size: 12px; }
+.news-head .news-now { margin-left: auto; color: var(--success); font-weight: 600; }
+.news-ver ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.news-ver li { font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.news-ver li::marker { color: var(--accent); }
+.news-ver + .news-ver { padding-top: 14px; border-top: 1px solid var(--border); }

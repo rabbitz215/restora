@@ -1477,7 +1477,7 @@ function renderUpdDialog() {
   let body, foot = '';
   if (!U.supported) {
     body = `<div class="upd-hero">${ic('info')}<div><b>Updates are installed from GitHub Releases</b><span>In-app updates work in the installed app (Windows installer, AppImage or .deb). You're running Restora from source.</span></div></div>`;
-    foot = `<a class="btn" href="${RELEASES_URL}" target="_blank">${ic('arrowUpRight')}Open releases</a>`;
+    foot = `<button class="btn ghost" data-act="news-open">${ic('rocket')}What's new</button><a class="btn" href="${RELEASES_URL}" target="_blank">${ic('arrowUpRight')}Open releases</a>`;
   } else if (U.state === 'checking') {
     body = `<div class="upd-hero">${ic('loader', 'spin')}<div><b>Checking for updates…</b><span>Looking at the latest release on GitHub.</span></div></div>`;
   } else if (U.state === 'available' || U.state === 'downloading' || U.state === 'downloaded') {
@@ -1495,7 +1495,7 @@ function renderUpdDialog() {
     foot = `<a class="btn ghost" href="${RELEASES_URL}" target="_blank">Open releases</a><button class="btn primary" data-act="upd-check">${ic('refresh')}Try again</button>`;
   } else {
     body = `<div class="upd-hero ok">${ic('check')}<div><b>You're up to date</b><span>Restora v${esc(U.current)}${U.checkedAt ? ` · checked ${timeAgo(U.checkedAt)}` : ''}</span></div></div>`;
-    foot = `<button class="btn primary" data-act="upd-check">${ic('refresh')}Check now</button>`;
+    foot = `<button class="btn ghost" data-act="news-open">${ic('rocket')}What's new</button><button class="btn primary" data-act="upd-check">${ic('refresh')}Check now</button>`;
   }
   $('#updDialog').innerHTML = `<div class="modal upd-modal">
     <div class="modal-head"><div class="logo" style="width:36px;height:36px">${ic('download')}</div><div><h3>Updates</h3><p>Restora v${esc(U.current || '?')}</p></div><button class="icon-btn" data-act="upd-close">${ic('x')}</button></div>
@@ -1503,6 +1503,32 @@ function renderUpdDialog() {
       ${U.supported ? `<label class="check-inline" style="font-size:12.5px">${sw('data-change="upd-auto"', U.auto)}<span>Check for updates automatically</span></label>` : ''}</div>
     <div class="modal-foot"><div class="spacer"></div>${foot}</div></div>`;
 }
+/* ---- What's new (changelog after an update) ---- */
+const vcmp = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+async function showWhatsNew(force = false) {
+  const cur = S.env?.version; if (!cur) return;
+  const last = store.get('lastVersion', null);
+  store.set('lastVersion', cur);
+  let log = [];
+  try { log = await api.changelog(); } catch {}
+  let entries, upgraded = false;
+  if (force) entries = log.slice(0, 8);
+  else if (last && vcmp(cur, last) > 0) { entries = log.filter((e) => vcmp(e.version, last) > 0 && vcmp(e.version, cur) <= 0); upgraded = true; }
+  else if (!last && (S.conns.length || S.history.length)) { entries = log.filter((e) => e.version === cur); upgraded = true; } // updated from a version without this feature
+  else return;
+  if (!entries.length) return;
+  $('#newsDialog').innerHTML = `<div class="modal news-modal">
+    <div class="modal-head"><div class="logo" style="width:36px;height:36px">${ic('rocket')}</div>
+      <div><h3>What's new</h3><p>${upgraded ? `Restora was updated${last ? ` from v${esc(last)}` : ''} to v${esc(cur)}` : `Restora v${esc(cur)}`}</p></div>
+      <button class="icon-btn" data-act="news-close">${ic('x')}</button></div>
+    <div class="modal-body news-body">${entries.map((e) => `
+      <section class="news-ver"><div class="news-head"><span class="chip ${e.version === cur ? 'accent' : ''}">v${esc(e.version)}</span>${e.date ? `<small>${esc(e.date)}</small>` : ''}${e.version === cur ? '<small class="news-now">installed</small>' : ''}</div>
+        <ul>${e.items.map((it) => `<li>${esc(it)}</li>`).join('')}</ul></section>`).join('')}</div>
+    <div class="modal-foot"><a class="btn ghost" href="${RELEASES_URL}" target="_blank">All releases</a><div class="spacer"></div><button class="btn primary" data-act="news-close">${ic('check')}Got it</button></div></div>`;
+  if ($('#updDialog').open) $('#updDialog').close();
+  $('#newsDialog').showModal();
+}
+
 async function checkUpdates(manual) {
   if (!U.supported) return;
   U.manual = !!manual;
@@ -2132,6 +2158,8 @@ const actions = {
   'theme-open': () => openTheme(),
   'upd-open': () => { renderUpdDialog(); $('#updDialog').showModal(); if (U.supported && (U.state === 'idle' || U.state === 'error' || (U.state === 'none' && Date.now() - (U.checkedAt || 0) > 60000))) checkUpdates(true); },
   'upd-close': () => $('#updDialog').close(),
+  'news-open': () => showWhatsNew(true),
+  'news-close': () => $('#newsDialog').close(),
   'upd-check': () => checkUpdates(true),
   'upd-download': async () => { U.state = 'downloading'; U.error = null; U.progress = { percent: 0 }; renderUpdBadge(); renderUpdDialog(); try { await api.update.download(); } catch (e) { onUpdate({ type: 'error', data: { message: e.message }, at: Date.now() }); } },
   'upd-install': async () => {
@@ -2342,6 +2370,7 @@ document.addEventListener('keydown', (e) => {
 // Middle-click closes a tab.
 document.addEventListener('auxclick', (e) => { const t = e.button === 1 && e.target.closest('.tab[data-key]'); if (t) { e.preventDefault(); closeTab(t.dataset.key); } });
 document.addEventListener('dblclick', (e) => { if (e.target.closest('#dv-tbody td[data-r]')) openValue(); if (e.target.closest('#q-tbody td[data-qr]')) actions['q-expand'](); });
+$('#newsDialog').addEventListener('click', (e) => { if (e.target.id === 'newsDialog') e.target.close(); });
 $('#createDialog').addEventListener('click', (e) => { if (e.target.id === 'createDialog') { e.target.close(); CT = null; } });
 $('#createDialog').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'ct-name') { e.preventDefault(); createIt(); } });
 $('#updDialog').addEventListener('click', (e) => { if (e.target.id === 'updDialog') e.target.close(); });
@@ -2377,6 +2406,7 @@ document.addEventListener('drop', (e) => {
   for (const id of openIds) if (connById(id)) T(id).open = true;
   $('#themeBtn').innerHTML = ic('palette');
   initUpdates();
+  setTimeout(() => showWhatsNew(false), 600);
   renderEnv(); renderConns(); go('restore');
   for (const id of openIds) if (connById(id)) loadTreeDbs(id);
   if (S.e.connId) selectExportConn(S.e.connId);

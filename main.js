@@ -241,6 +241,19 @@ app.whenReady().then(() => {
     return true;
   });
 
+  // CHANGELOG.md shipped with the app -> [{ version, date, items }]
+  handle('app:changelog', () => {
+    let md = '';
+    try { md = fs.readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf8'); } catch { return []; }
+    const out = [];
+    for (const block of md.split(/^## /m).slice(1)) {
+      const [head, ...rest] = block.split('\n');
+      const m = head.match(/^v?(\d+\.\d+\.\d+)\s*(?:[—–-]\s*(.+))?$/);
+      if (!m) continue;
+      out.push({ version: m[1], date: (m[2] || '').trim(), items: rest.map((l) => l.trim()).filter((l) => /^[-*] /.test(l)).map((l) => l.slice(2).trim()) });
+    }
+    return out;
+  });
   handle('dir:pick', async (def) => {
     const r = await dialog.showOpenDialog(win, { defaultPath: def, properties: ['openDirectory'] });
     return r.canceled ? null : r.filePaths[0];

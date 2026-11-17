@@ -33,7 +33,8 @@
       "preload.js",
       "lib/**",
       "renderer/**",
-      "package.json"
+      "package.json",
+      "CHANGELOG.md"
     ],
     "directories": {
       "output": "dist",
