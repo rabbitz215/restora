@@ -1443,6 +1443,78 @@ function editTheme(patch, rerender = true) {
   if (rerender) { renderThemeEditor(); renderThemeGrid(); }
 }
 
+/* ================= UPDATES ================= */
+const RELEASES_URL = 'https://github.com/rabbitz215/restora/releases';
+const U = { supported: false, current: '', state: 'idle', info: null, progress: null, error: null, checkedAt: null, auto: store.get('update.auto', true), manual: false };
+function onUpdate(m) {
+  const d = m.data || {};
+  if (m.type === 'checking') { U.state = 'checking'; U.error = null; }
+  else if (m.type === 'available') { U.state = 'available'; U.info = d; U.checkedAt = m.at; }
+  else if (m.type === 'none') { U.state = 'none'; U.info = d; U.checkedAt = m.at; }
+  else if (m.type === 'progress') { U.state = 'downloading'; U.progress = d; }
+  else if (m.type === 'downloaded') { U.state = 'downloaded'; U.info = d; }
+  else if (m.type === 'error') { U.state = U.state === 'downloading' ? 'available' : 'error'; U.error = d.message; U.checkedAt = m.at; }
+  renderUpdBadge();
+  if ($('#updDialog').open) renderUpdDialog();
+  if (m.type === 'available' && !U.manual) toast(`Restora ${d.version} is available. Click "Update" at the bottom of the sidebar.`, 'ok');
+  if (m.type !== 'checking') U.manual = false;
+}
+function renderUpdBadge() {
+  const el = $('#updInfo'); if (!el) return;
+  const v = U.info?.version;
+  if (U.state === 'available') el.innerHTML = `<button class="upd-pill" data-act="upd-open">${ic('download')}Update to v${esc(v)}</button>`;
+  else if (U.state === 'downloading') el.innerHTML = `<button class="upd-pill" data-act="upd-open">${ic('loader', 'spin')}Downloading… ${Math.floor(U.progress?.percent || 0)}%</button>`;
+  else if (U.state === 'downloaded') el.innerHTML = `<button class="upd-pill ready" data-act="upd-open">${ic('refresh')}Restart to update to v${esc(v)}</button>`;
+  else el.innerHTML = U.current ? `<button class="ver-link" data-act="upd-open" title="Check for updates">Restora v${esc(U.current)}${U.state === 'checking' ? ic('loader', 'spin') : ''}</button>` : '';
+}
+const notesText = (html) => {
+  if (!html) return '';
+  const txt = new DOMParser().parseFromString(String(html).replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<\/(p|li|h\d|tr|div)>|<br\s*\/?>/gi, '\n'), 'text/html').body.textContent || '';
+  return txt.replace(/\n{3,}/g, '\n\n').trim();
+};
+function renderUpdDialog() {
+  const v = U.info?.version;
+  let body, foot = '';
+  if (!U.supported) {
+    body = `<div class="upd-hero">${ic('info')}<div><b>Updates are installed from GitHub Releases</b><span>In-app updates work in the installed app (Windows installer, AppImage or .deb). You're running Restora from source.</span></div></div>`;
+    foot = `<a class="btn" href="${RELEASES_URL}" target="_blank">${ic('arrowUpRight')}Open releases</a>`;
+  } else if (U.state === 'checking') {
+    body = `<div class="upd-hero">${ic('loader', 'spin')}<div><b>Checking for updates…</b><span>Looking at the latest release on GitHub.</span></div></div>`;
+  } else if (U.state === 'available' || U.state === 'downloading' || U.state === 'downloaded') {
+    const p = U.progress;
+    const notes = notesText(U.info?.notes);
+    body = `<div class="upd-hero ok">${ic(U.state === 'downloaded' ? 'check' : 'download')}<div><b>${U.state === 'downloaded' ? `v${esc(v)} is ready to install` : `Restora v${esc(v)} is available`}</b><span>You have v${esc(U.current)}${U.info?.releaseDate ? ` · released ${fmtDay(new Date(U.info.releaseDate).getTime())}` : ''}</span></div></div>
+      ${U.state === 'downloading' ? `<div class="upd-bar"><i style="width:${Math.max(2, p?.percent || 0)}%"></i></div><div class="upd-sub">${fmtBytes(p?.transferred)} of ${fmtBytes(p?.total)} · ${fmtBytes(p?.bytesPerSecond)}/s</div>` : ''}
+      ${U.state === 'downloaded' ? `<div class="callout info">${ic('info')}<div>Restora will close, install the update and start again.${S.env?.platform === 'linux' && !U.appImage ? ' Your system will ask for your password to install the package.' : ''}</div></div>` : ''}
+      ${U.error ? `<div class="callout danger">${ic('alert')}<div>${esc(U.error)}</div></div>` : ''}
+      ${notes ? `<div class="upd-notes-label">What's new</div><div class="upd-notes">${esc(notes)}</div>` : ''}`;
+    foot = U.state === 'available' ? `<a class="btn ghost" href="${RELEASES_URL}/tag/v${esc(v)}" target="_blank">Release page</a><button class="btn primary" data-act="upd-download">${ic('download')}Download update</button>`
+      : U.state === 'downloaded' ? `<button class="btn" data-act="upd-close">Later</button><button class="btn primary" data-act="upd-install">${ic('refresh')}Restart &amp; update</button>` : '';
+  } else if (U.state === 'error') {
+    body = `<div class="upd-hero bad">${ic('alert')}<div><b>Couldn't check for updates</b><span>${esc(U.error || 'Unknown error')}</span></div></div>`;
+    foot = `<a class="btn ghost" href="${RELEASES_URL}" target="_blank">Open releases</a><button class="btn primary" data-act="upd-check">${ic('refresh')}Try again</button>`;
+  } else {
+    body = `<div class="upd-hero ok">${ic('check')}<div><b>You're up to date</b><span>Restora v${esc(U.current)}${U.checkedAt ? ` · checked ${timeAgo(U.checkedAt)}` : ''}</span></div></div>`;
+    foot = `<button class="btn primary" data-act="upd-check">${ic('refresh')}Check now</button>`;
+  }
+  $('#updDialog').innerHTML = `<div class="modal upd-modal">
+    <div class="modal-head"><div class="logo" style="width:36px;height:36px">${ic('download')}</div><div><h3>Updates</h3><p>Restora v${esc(U.current || '?')}</p></div><button class="icon-btn" data-act="upd-close">${ic('x')}</button></div>
+    <div class="modal-body">${body}
+      ${U.supported ? `<label class="check-inline" style="font-size:12.5px">${sw('data-change="upd-auto"', U.auto)}<span>Check for updates automatically</span></label>` : ''}</div>
+    <div class="modal-foot"><div class="spacer"></div>${foot}</div></div>`;
+}
+async function checkUpdates(manual) {
+  if (!U.supported) return;
+  U.manual = !!manual;
+  try { await api.update.check(); } catch (e) { onUpdate({ type: 'error', data: { message: e.message }, at: Date.now() }); }
+}
+async function initUpdates() {
+  try { const st = await api.update.state(); Object.assign(U, { supported: st.supported, current: st.current, appImage: st.appImage }); if (st.last) onUpdate(st.last); } catch {}
+  api.update.on(onUpdate);
+  renderUpdBadge();
+  if (U.supported && U.auto) { setTimeout(() => checkUpdates(false), 4000); setInterval(() => { if (U.auto && (U.state === 'none' || U.state === 'error' || U.state === 'idle')) checkUpdates(false); }, 6 * 3600 * 1000); }
+}
+
 /* ================= JOB ================= */
 const pct = (p) => (p && p.total ? Math.min(100, (100 * p.bytes) / p.total) : 0);
 const RING_C = 2 * Math.PI * 88;
@@ -1948,6 +2020,14 @@ const actions = {
   'q-copy-tsv': () => { const d = S.dv, set = resultSets(d)[d.resTab]; if (!set) return; const cell = (v) => (v === null ? '' : cellText(v)).replace(/[\t\n\r]+/g, ' '); navigator.clipboard.writeText([set.columns.map((c) => c.name).join('\t'), ...sortedRows(d, set).map((i) => set.rows[i].map(cell).join('\t'))].join('\n')); toast(`Copied ${fmtNum(set.rows.length)} rows`, 'ok'); },
   'val-copy': () => { const t = $('#valDialog .val-text'); if (t) { navigator.clipboard.writeText(t.value); toast('Copied value', 'ok'); } },
   'theme-open': () => openTheme(),
+  'upd-open': () => { renderUpdDialog(); $('#updDialog').showModal(); if (U.supported && (U.state === 'idle' || U.state === 'error' || (U.state === 'none' && Date.now() - (U.checkedAt || 0) > 60000))) checkUpdates(true); },
+  'upd-close': () => $('#updDialog').close(),
+  'upd-check': () => checkUpdates(true),
+  'upd-download': async () => { U.state = 'downloading'; U.error = null; U.progress = { percent: 0 }; renderUpdBadge(); renderUpdDialog(); try { await api.update.download(); } catch (e) { onUpdate({ type: 'error', data: { message: e.message }, at: Date.now() }); } },
+  'upd-install': async () => {
+    if (S.job?.status === 'running' && !(await api.confirm({ title: 'Restart & update', message: 'A job is still running. Stop it and update now?', detail: 'The running restore, export or import will be cancelled.', ok: 'Stop & update' }))) return;
+    await api.update.install();
+  },
   'th-close': () => $('#themeDialog').close(),
   'th-group': (el) => { TH.group = el.dataset.g; renderThemeGroups(); renderThemeGrid(); },
   'th-pick': (el) => { const t = allThemes().find((x) => x.id === el.dataset.id); if (t) { applyTheme(t); renderThemeGrid(); renderThemeEditor(); } },
@@ -2036,6 +2116,7 @@ const changes = {
   'e-tbl': (el) => { if (el.checked) S.e.selected.add(el.dataset.name); else S.e.selected.delete(el.dataset.name); const n = $('#e-selcount'); if (n) n.textContent = `${exportTables().length} of ${S.e.objects.length} selected`; renderExportOptions(); },
   'q-db': (el) => { S.dv.db = el.value || null; saveTabs(); renderTabs(); },
   'q-coe': (el) => { S.dv.coe = el.checked; },
+  'upd-auto': (el) => { U.auto = el.checked; store.set('update.auto', el.checked); if (el.checked && U.state === 'idle') checkUpdates(false); },
   'th-hex': (el) => { const v = el.value.trim(); if (/^#?[0-9a-f]{6}$/i.test(v)) editTheme({ [el.dataset.k]: v.startsWith('#') ? v : '#' + v }); else renderThemeEditor(); },
   'th-grad': (el) => { const t = Theme.current; editTheme(el.checked ? { accent2: Theme.mix(t.accent, '#22d3ee', 0.6) } : { accent2: null, mid: null }); },
   'th-mid': (el) => { const t = Theme.current; editTheme({ mid: el.checked ? Theme.mix(t.accent, t.accent2, 0.5) : null }); },
@@ -2142,6 +2223,7 @@ document.addEventListener('keydown', (e) => {
 // Middle-click closes a tab.
 document.addEventListener('auxclick', (e) => { const t = e.button === 1 && e.target.closest('.tab[data-key]'); if (t) { e.preventDefault(); closeTab(t.dataset.key); } });
 document.addEventListener('dblclick', (e) => { if (e.target.closest('#dv-tbody td[data-r]')) openValue(); if (e.target.closest('#q-tbody td[data-qr]')) actions['q-expand'](); });
+$('#updDialog').addEventListener('click', (e) => { if (e.target.id === 'updDialog') e.target.close(); });
 $('#themeDialog').addEventListener('click', (e) => { if (e.target.id === 'themeDialog') e.target.close(); });
 $('#scpDialog').addEventListener('click', (e) => { if (e.target.id === 'scpDialog') e.target.close(); });
 $('#valDialog').addEventListener('click', (e) => { if (e.target.id === 'valDialog') e.target.close(); });
@@ -2173,6 +2255,7 @@ document.addEventListener('drop', (e) => {
   const openIds = store.get('tree.open', null) ?? (S.conns.length === 1 ? [S.conns[0].id] : []);
   for (const id of openIds) if (connById(id)) T(id).open = true;
   $('#themeBtn').innerHTML = ic('palette');
+  initUpdates();
   renderEnv(); renderConns(); go('restore');
   for (const id of openIds) if (connById(id)) loadTreeDbs(id);
   if (S.e.connId) selectExportConn(S.e.connId);

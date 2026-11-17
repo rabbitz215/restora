@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "csv-parse": "^7.0.3",
+    "electron-updater": "^6.8.11",
     "mysql2": "^3.24.6"
   },
   "devDependencies": {
@@ -92,7 +93,14 @@
       "shortcutName": "Restora",
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
-    "publish": null
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "rabbitz215",
+        "repo": "restora",
+        "releaseType": "release"
+      }
+    ]
   },
   "desktopName": "restora.desktop",
   "homepage": "https://github.com/rabbitz215/restora",

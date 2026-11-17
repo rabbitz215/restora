@@ -39,6 +39,10 @@ Grab the latest build from the [**Releases page**](https://github.com/rabbitz215
 > Windows builds are not code-signed, so SmartScreen may say *"Windows protected your PC"*.
 > Click **More info → Run anyway**.
 
+**Updates:** Restora checks GitHub for new releases on startup. When one is out, an **Update** button appears at the bottom
+of the sidebar: one click downloads it, **Restart & update** installs it. This works for the Windows installer, the AppImage
+and the `.deb` (which asks for your password to install). You can turn automatic checks off in the update dialog.
+
 ## Features
 
 ### Restore dumps

@@ -1,0 +1,4 @@
+# Used only when running from source with RESTORA_UPDATE_DEV=1 (to test the updater).
+provider: github
+owner: rabbitz215
+repo: restora

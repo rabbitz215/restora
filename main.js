@@ -9,6 +9,7 @@ const { ExportJob, dumpToolInfo } = require('./lib/export');
 const presets = require('./lib/presets');
 const { FetchJob, remoteList } = require('./lib/fetch');
 const query = require('./lib/query');
+const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 
 let win, store;
@@ -189,6 +190,41 @@ app.whenReady().then(() => {
     if (win && !win.isDestroyed()) win.setBackgroundColor(c);
     try { fs.writeFileSync(path.join(app.getPath('userData'), 'ui.json'), JSON.stringify({ bg: c })); } catch {}
   });
+  // In-app updates from GitHub Releases (installer, AppImage and .deb builds).
+  const updatesSupported = () => app.isPackaged || !!process.env.RESTORA_UPDATE_DEV;
+  let lastUpdate = null;
+  const updEvent = (type, data) => { lastUpdate = { type, data, at: Date.now() }; send('update:event', lastUpdate); };
+  const updInfo = (i) => ({
+    version: i?.version, releaseDate: i?.releaseDate,
+    notes: Array.isArray(i?.releaseNotes) ? i.releaseNotes.map((n) => n.note || '').join('\n') : i?.releaseNotes || '',
+  });
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.logger = null;
+  if (process.env.RESTORA_UPDATE_DEV) { autoUpdater.forceDevUpdateConfig = true; if (process.env.RESTORA_FAKE_VERSION) autoUpdater.currentVersion = new (require('semver').SemVer)(process.env.RESTORA_FAKE_VERSION); }
+  autoUpdater.on('checking-for-update', () => updEvent('checking'));
+  autoUpdater.on('update-available', (i) => updEvent('available', updInfo(i)));
+  autoUpdater.on('update-not-available', (i) => updEvent('none', updInfo(i)));
+  autoUpdater.on('download-progress', (p) => updEvent('progress', { percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: p.bytesPerSecond }));
+  autoUpdater.on('update-downloaded', (i) => updEvent('downloaded', updInfo(i)));
+  const friendlyUpdateError = (e) => {
+    const m = String(e?.message || e);
+    if (/latest(-linux|-mac)?\.yml/i.test(m) && /404/.test(m)) return "The latest release doesn't support in-app updates yet. Download it once from the releases page.";
+    if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|net::ERR_/i.test(m)) return "Couldn't reach GitHub. Check your internet connection and try again.";
+    if (/APPIMAGE env is not defined/i.test(m)) return 'In-app updates for Linux work with the AppImage or .deb build.';
+    if (/403|rate limit/i.test(m)) return 'GitHub is limiting requests right now. Try again in a few minutes.';
+    return m.split(/\r?\n|\\n| Headers:/)[0].slice(0, 220);
+  };
+  autoUpdater.on('error', (e) => updEvent('error', { message: friendlyUpdateError(e) }));
+  handle('update:state', () => ({ supported: updatesSupported(), current: process.env.RESTORA_FAKE_VERSION || app.getVersion(), last: lastUpdate, platform: process.platform, appImage: !!process.env.APPIMAGE }));
+  handle('update:check', async () => { if (!updatesSupported()) return null; try { await autoUpdater.checkForUpdates(); } catch (e) { throw new Error(friendlyUpdateError(e)); } return true; });
+  handle('update:download', async () => { try { await autoUpdater.downloadUpdate(); } catch (e) { throw new Error(friendlyUpdateError(e)); } return true; });
+  handle('update:install', () => {
+    for (const j of jobs.values()) j.cancel();
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return true;
+  });
+
   handle('dir:pick', async (def) => {
     const r = await dialog.showOpenDialog(win, { defaultPath: def, properties: ['openDirectory'] });
     return r.canceled ? null : r.filePaths[0];

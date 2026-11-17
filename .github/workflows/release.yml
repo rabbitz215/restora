@@ -18,11 +18,14 @@ jobs:
             script: dist:win
             files: |
               dist/*.exe
+              dist/*.exe.blockmap
+              dist/latest*.yml
           - os: ubuntu-latest
             script: dist:linux
             files: |
               dist/*.AppImage
               dist/*.deb
+              dist/latest*.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -63,3 +66,4 @@ jobs:
 
             Restores and exports need the MySQL client tools (`mysql`, `mysqldump`). See the README for setup.
             Windows builds are not code-signed: on the SmartScreen prompt choose **More info → Run anyway**.
+            From v1.0.2 on, Restora updates itself: use **Update** at the bottom of the sidebar.
