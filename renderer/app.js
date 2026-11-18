@@ -52,6 +52,7 @@ const ICONS = {
   palette: '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   maximize: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
 };
 const ic = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
@@ -106,7 +107,7 @@ const OPT_DEFS = [
 ];
 
 const S = {
-  view: 'restore', conns: [], env: null, history: [],
+  view: 'home', conns: [], env: null, history: [],
   r: { file: null, info: null, inspecting: false, connId: store.get('r.connId', null), server: null, dbs: null, dbMode: 'existing', db: null, newDb: '', dbFilter: '', dropFirst: false, opts: { ...DEFAULT_OPTS, ...store.get('r.opts', {}) } },
   c: { file: null, preview: null, delimiter: null, header: true, connId: store.get('c.connId', null), dbs: null, db: null, tables: null, tableMode: 'new', table: '', newTable: '', mapping: [], opts: { mode: 'insert', emptyAsNull: true, truncate: false, force: false } },
   e: { connId: store.get('e.connId', null), server: null, dbs: null, db: null, dbFilter: '', objects: null, allTables: true, selected: new Set(), tFilter: '', file: null, opts: { gzip: true, content: 'both', routines: true, triggers: true, events: false, addDrop: true, createDb: false, ...store.get('e.opts', {}) } },
@@ -127,7 +128,7 @@ async function guard(fn) { try { return await fn(); } catch (e) { toast(e.messag
 
 /* ---------------- shell ---------------- */
 function renderNav() {
-  const items = [...S.presets.map((p) => [`quick:${p.id}`, 'rocket', p.name]), ['restore', 'restore', 'Restore dump'], ['export', 'download', 'Export database'], ['csv', 'sheet', 'Import CSV'], ['data', 'table', 'Data & SQL'], ['history', 'history', 'History']];
+  const items = [['home', 'home', 'Home'], ...S.presets.map((p) => [`quick:${p.id}`, 'rocket', p.name]), ['restore', 'restore', 'Restore dump'], ['export', 'download', 'Export database'], ['csv', 'sheet', 'Import CSV'], ['data', 'table', 'Data & SQL'], ['history', 'history', 'History']];
   const cur = S.view === 'quick' ? `quick:${S.a.id}` : S.view;
   let html = items.map(([v, i, l]) => `<button class="nav-item ${cur === v ? 'active' : ''}" data-act="nav" data-view="${v}">${ic(i)}${l}${v === 'history' && S.history.length ? `<span class="count">${S.history.length}</span>` : ''}</button>`).join('');
   if (S.job) {
@@ -230,6 +231,7 @@ function go(view) {
   S.view = view;
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + view));
   renderNav();
+  if (view === 'home') renderHome();
   if (view === 'restore') renderRestore();
   if (view === 'quick') { renderQuick(); loadQuick(); }
   if (view === 'export') renderExport();
@@ -260,6 +262,124 @@ function dropzone(kind) {
   </div>`;
 }
 const sw = (attrs, checked, cls = '') => `<div class="switch ${cls}"><input type="checkbox" ${attrs} ${checked ? 'checked' : ''}><span></span></div>`;
+
+/* ================= HOME ================= */
+const JOB_LABEL = { restore: 'SQL restore', export: 'SQL export', csv: 'CSV import', fetch: 'SCP fetch' };
+const histIcon = (x) => (x.status === 'success' ? (x.kind === 'export' ? 'download' : 'check') : x.status === 'cancelled' ? 'ban' : x.status === 'failed' ? 'x' : 'alert');
+function greeting() { const h = new Date().getHours(); return h < 5 ? 'Working late' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
+
+function homeJobHtml() {
+  const j = S.job;
+  if (!j || j.status !== 'running') return '';
+  return `<div class="card home-job" data-act="nav" data-view="job">
+    <div class="home-job-ico">${ic('loader', 'spin')}</div>
+    <div class="home-job-txt"><b>${esc(JOB_LABEL[j.kind] || 'Job')} running · ${esc(j.title)}</b><small id="hj-sub">${esc(j.database || '')}</small></div>
+    <div class="home-job-bar"><span id="hj-bar" style="width:${pct(j.progress)}%"></span></div>
+    <b class="home-job-pct" id="hj-pct">${Math.floor(pct(j.progress))}%</b>
+    <span class="btn sm">View ${ic('arrow')}</span>
+  </div>`;
+}
+function updateHomeJob() {
+  const j = S.job; if (!j) return;
+  const P = pct(j.progress), p = j.progress || {};
+  const bar = $('#hj-bar'); if (bar) bar.style.width = P + '%';
+  const pe = $('#hj-pct'); if (pe) pe.textContent = Math.floor(P) + '%';
+  const sub = $('#hj-sub'); if (sub) sub.textContent = [j.database, p.table && `table ${p.table}`, p.eta != null && `${fmtDur(p.eta)} left`].filter(Boolean).join(' · ');
+}
+
+function homeSetupHtml() {
+  const env = S.env;
+  const steps = [
+    [S.conns.length > 0, 'Add a MySQL / MariaDB connection', 'Local or over an SSH tunnel. Passwords are encrypted with your OS keyring.', S.conns.length ? '' : `<button class="btn sm primary" data-act="add-conn">${ic('plus')}Add connection</button>`],
+    [!!env?.mysql?.found, '<code>mysql</code> client installed', 'Needed to restore dumps. Install <b>mysql-client</b> or <b>mariadb-client</b>.', ''],
+    [!!env?.dump?.found, '<code>mysqldump</code> installed', 'Needed to export databases. Comes with the same client package.', ''],
+  ];
+  if (!env || steps.every((x) => x[0])) return '';
+  const done = steps.filter((x) => x[0]).length;
+  return `<div class="card home-setup">
+    <div class="card-head"><h3>Get set up</h3><span class="chip ${done === steps.length ? 'ok' : 'accent'}">${done} of ${steps.length} done</span></div>
+    <div class="card-body">${steps.map(([ok, t, d, btn]) => `<div class="home-step ${ok ? 'done' : ''}"><span class="home-check">${ic(ok ? 'check' : 'info')}</span><div class="txt"><b>${t}</b>${ok ? '' : `<small>${d}</small>`}</div>${ok ? '' : btn}</div>`).join('')}</div>
+  </div>`;
+}
+
+function homeStats() {
+  const h = S.history, now = Date.now(), DAY = 86400000;
+  const week = h.filter((x) => now - x.at < 7 * DAY);
+  const recent = h.slice(0, 30).filter((x) => x.status !== 'cancelled');
+  const ok = recent.filter((x) => x.status === 'success').length;
+  const restored = h.filter((x) => x.kind === 'restore' && x.status !== 'failed' && x.status !== 'cancelled' && now - x.at < 30 * DAY).reduce((a, x) => a + (x.total || 0), 0);
+  const last = h[0];
+  return `<div class="stats home-stats">
+    <div class="stat"><span>Connections</span><b>${fmtNum(S.conns.length)}</b></div>
+    <div class="stat"><span>Jobs this week</span><b>${fmtNum(week.length)}</b></div>
+    <div class="stat"><span>Success rate</span><b class="${recent.length && ok / recent.length < 0.7 ? 'err' : ''}">${recent.length ? Math.round((100 * ok) / recent.length) + '%' : '—'}</b></div>
+    <div class="stat"><span>Restored · 30 days</span><b>${restored ? fmtBytes(restored) : '—'}</b></div>
+  </div>${last ? `<div class="home-last muted">${ic('history')}<span>Last job ${timeAgo(last.at)}: ${esc(JOB_LABEL[last.kind] || last.kind)} of <code>${esc(last.fileName)}</code> → ${esc(last.connName)} / ${esc(last.database)}</span></div>` : ''}`;
+}
+
+function homeActionsHtml() {
+  const tiles = [
+    ['restore', 'restore', 'Restore dump', '.sql / .sql.gz with automatic fixes'],
+    ['export', 'download', 'Export database', 'mysqldump to .sql or .sql.gz'],
+    ['csv', 'sheet', 'Import CSV', 'Map columns into a new or existing table'],
+    ['home-query', 'code', 'New SQL query', 'Ctrl+T · run with Ctrl+Enter'],
+  ];
+  const presets = S.presets.map((p) => `<button class="home-preset" data-act="nav" data-view="quick:${esc(p.id)}">${ic('rocket')}<span>${esc(p.name)}</span>${ic('chev')}</button>`).join('');
+  return `<div class="home-actions" data-drop="home">
+    ${tiles.map(([v, i, t, d]) => `<button class="home-tile" ${v === 'home-query' ? 'data-act="home-query"' : `data-act="nav" data-view="${v}"`}><span class="home-tile-ico">${ic(i)}</span><b>${t}</b><small>${d}</small></button>`).join('')}
+  </div>
+  <div class="home-drop muted">${ic('upload')}<span>Drop a <code>.sql</code>, <code>.sql.gz</code> or <code>.csv</code> file anywhere to start</span></div>
+  ${presets ? `<div class="home-presets"><span class="opt-group-label" style="margin:0 6px 0 0">${ic('rocket')}Quick restore</span>${presets}</div>` : ''}`;
+}
+
+function homeActivityHtml() {
+  const h = S.history.slice(0, 6);
+  const body = !h.length
+    ? `<div class="home-empty">${ic('history')}<div><b>No jobs yet</b><small>Restores, exports and imports show up here with timing and errors.</small></div></div>`
+    : h.map((x) => `<div class="home-row" data-act="home-hist" data-id="${esc(x.id)}">
+        <div class="hist-ico ${x.status}">${ic(histIcon(x))}</div>
+        <div class="t"><b>${esc(x.fileName)}</b><small><span class="dot" style="color:${esc(x.connColor || '#888')};width:7px;height:7px"></span>${esc(JOB_LABEL[x.kind] || x.kind)} · ${esc(x.connName)} / ${esc(x.database)}${x.errorCount ? ` · <span style="color:var(--danger)">${x.errorCount} err</span>` : ''}</small></div>
+        <div class="when">${timeAgo(x.at)}<small>${fmtDur(x.durationMs / 1000)}</small></div>
+      </div>`).join('');
+  return `<div class="card"><div class="card-head"><h3>Recent activity</h3>${S.history.length ? `<div class="right"><button class="btn sm ghost" data-act="nav" data-view="history">View all ${ic('arrow')}</button></div>` : ''}</div><div class="home-list">${body}</div></div>`;
+}
+
+function homeTabsHtml() {
+  const tabs = S.tabs.slice(0, 6);
+  if (!tabs.length) return '';
+  return `<div class="card"><div class="card-head"><h3>Pick up where you left off</h3><div class="right"><span class="chip">${plural(S.tabs.length, 'tab')}</span></div></div><div class="home-list">
+    ${tabs.map((t) => { const c = connById(t.connId); const q = t.kind === 'query'; return `<div class="home-row" data-act="home-tab" data-key="${esc(t.key)}">
+      <span class="home-row-ico">${ic(q ? 'code' : 'table')}</span>
+      <div class="t"><b>${esc(q ? t.title || 'Query' : t.table)}</b><small><span class="dot" style="color:${esc(c?.color || '#888')};width:7px;height:7px"></span>${esc(c?.name || '')}${t.db ? ' / ' + esc(t.db) : ''}</small></div>
+      ${ic('chev')}
+    </div>`; }).join('')}</div></div>`;
+}
+
+function homeConnsHtml() {
+  if (!S.conns.length) return '';
+  return `<div class="card"><div class="card-head"><h3>Connections</h3><div class="right"><button class="btn sm ghost" data-act="add-conn">${ic('plus')}Add</button></div></div><div class="home-list">
+    ${S.conns.map((c) => `<div class="home-row" data-act="home-conn" data-id="${esc(c.id)}">
+      <span class="dot" style="color:${esc(c.color)};margin:0 4px"></span>
+      <div class="t"><b>${esc(c.name)}</b><small class="mono">${esc(c.user)}@${esc(c.host)}:${c.port}${c.ssh?.enabled ? ' · via SSH' : ''}</small></div>
+      <span class="row-actions"><button class="icon-btn" data-act="tree-query" data-id="${esc(c.id)}" title="New SQL query">${ic('code')}</button><button class="icon-btn" data-act="home-restore" data-id="${esc(c.id)}" title="Restore a dump">${ic('restore')}</button><button class="icon-btn" data-act="home-export" data-id="${esc(c.id)}" title="Export">${ic('download')}</button><button class="icon-btn" data-act="edit-conn" data-id="${esc(c.id)}" title="Edit">${ic('pencil')}</button></span>
+    </div>`).join('')}</div></div>`;
+}
+
+function renderHome() {
+  const el = $('#view-home'); if (!el) return;
+  el.innerHTML = `
+    <div class="page-head"><div><h1>${greeting()}</h1><p>${S.conns.length ? `${plural(S.conns.length, 'connection')} ready. What would you like to do?` : 'Restore, export, import and browse MySQL / MariaDB databases.'}</p></div>
+      <div style="display:flex;gap:8px"><button class="btn ghost" data-act="theme-open">${ic('palette')}Theme</button><button class="btn" data-act="upd-whatsnew">${ic('info')}What's new${S.env?.version ? ` · v${esc(S.env.version)}` : ''}</button></div></div>
+    ${homeJobHtml()}
+    ${homeSetupHtml()}
+    ${homeActionsHtml()}
+    ${homeStats()}
+    <div class="home-cols">
+      <div class="stack">${homeActivityHtml()}</div>
+      <div class="stack">${homeTabsHtml()}${homeConnsHtml()}</div>
+    </div>`;
+  if (S.job?.status === 'running') updateHomeJob();
+}
 
 /* ================= RESTORE ================= */
 function renderRestore() {
@@ -937,7 +1057,7 @@ function renderData() {
 function filterInfo() {
   const d = S.dv;
   const n = Object.values(d.filters).filter((v) => String(v).trim()).length + (d.search.trim() ? 1 : 0);
-  return `<span class="chip ${n ? 'accent' : ''}" title="Filter syntax: text = contains · =x exact · !x not containing · >5 <5 >=5 <=5 · a*b wildcards · NULL / NOT NULL · EMPTY">${ic('filter')}${n ? `${n} filter${n > 1 ? 's' : ''}` : 'No filters'}</span>${n ? `<button class="btn sm ghost" data-act="dv-clear">${ic('x')}Clear</button>` : ''}`;
+  return `<span class="chip ${n ? 'accent' : ''}" title="Filter syntax: text = contains · =x exact · !x not containing · >5 <5 >=5 <=5 · a*b wildcards · IN a,b,c · NULL / NOT NULL · EMPTY">${ic('filter')}${n ? `${n} filter${n > 1 ? 's' : ''}` : 'No filters'}</span>${n ? `<button class="btn sm ghost" data-act="dv-clear">${ic('x')}Clear</button>` : ''}`;
 }
 
 /* ---- side panel: columns + relationships ---- */
@@ -1027,7 +1147,7 @@ function renderDataHead() {
       <div class="th"><span class="cn">${c.pk ? ic('key', 'pk') : ''}${fk ? ic('link', 'fk') : ''}${esc(c.name)}</span><span class="si">${s ? ic(s.dir === 'desc' ? 'sortDown' : 'sortUp') + (d.sort.length > 1 ? `<sup>${s.i + 1}</sup>` : '') : ''}</span></div>
       <small>${esc(c.type)}</small></th>`;
   }).join('')}</tr>
-  <tr class="frow"><th class="rn">${ic('filter')}</th>${vis.map((c) => `<th><input class="finput ${String(d.filters[c.name] || '').trim() ? 'on' : ''}" data-input="dv-filter" data-col="${esc(c.name)}" value="${esc(d.filters[c.name] || '')}" placeholder="Filter" spellcheck="false"></th>`).join('')}</tr>`;
+  <tr class="frow"><th class="rn">${ic('filter')}</th>${vis.map((c) => `<th><div class="fcell"><input class="finput ${String(d.filters[c.name] || '').trim() ? 'on' : ''}" data-input="dv-filter" data-col="${esc(c.name)}" value="${esc(d.filters[c.name] || '')}" placeholder="Filter" spellcheck="false"><button class="fbtn" data-act="dv-fmenu" data-col="${esc(c.name)}" title="Filter options">${ic('sortDown')}</button></div></th>`).join('')}</tr>`;
 }
 
 const NUM_T = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|year|bit)$/;
@@ -1212,6 +1332,36 @@ function inRange(d, r, ci) {
   return p >= g.p1 && p <= g.p2;
 }
 
+/* ---- virtual scrolling: only rows near the viewport are in the DOM ---- */
+const VIRT_MIN = 150, VIRT_OVER = 40, VIRT_CHUNK = 20;
+let rowH = 27; // measured from a rendered row
+// Which rows [start, end) to render for a scroller whose table has n body rows.
+function virtWindow(scroller, n) {
+  if (n <= VIRT_MIN || !scroller) return [0, n];
+  const headH = scroller.querySelector('thead')?.offsetHeight || 0;
+  const first = Math.floor(Math.max(0, scroller.scrollTop - headH) / rowH);
+  const shown = Math.ceil(scroller.clientHeight / rowH);
+  const start = Math.max(0, Math.floor((first - VIRT_OVER) / VIRT_CHUNK) * VIRT_CHUNK);
+  const end = Math.min(n, Math.ceil((first + shown + VIRT_OVER) / VIRT_CHUNK) * VIRT_CHUNK);
+  return [start, Math.max(end, Math.min(n, start + VIRT_CHUNK))];
+}
+const vpad = (rows, cols) => (rows > 0 ? `<tr class="vpad"><td colspan="${cols}" style="height:${rows * rowH}px"></td></tr>` : '');
+// Re-measure the row height; true if it changed (the caller should re-render).
+function measureRowH(tbody) {
+  const tr = tbody.querySelector('tr:not(.vpad)'); if (!tr) return false;
+  const h = tr.getBoundingClientRect().height;
+  if (h > 0 && Math.abs(h - rowH) > 0.5) { rowH = h; return true; }
+  return false;
+}
+// Keep columns from shrinking when other rows scroll into view (widths only grow).
+function lockColWidths(thead, store) {
+  for (const th of thead?.rows[0]?.cells || []) {
+    const k = th.dataset.col ?? th.dataset.c; if (k == null) continue;
+    const w = th.offsetWidth; if (w > (store[k] || 0)) store[k] = w;
+    th.style.minWidth = store[k] + 'px';
+  }
+}
+
 function renderDataBody() {
   const d = S.dv;
   if (gridEditor) { const ed = gridEditor; gridEditor = null; ed.inp.remove(); }
@@ -1219,24 +1369,39 @@ function renderDataBody() {
   grid.classList.toggle('loading', d.loading);
   const msg = $('#dv-msg');
   if (d.error) {
-    $('#dv-tbody').innerHTML = '';
+    $('#dv-tbody').innerHTML = ''; d.vwin = null;
     msg.innerHTML = `<div class="callout danger" style="margin:16px">${ic('alert')}<div>${esc(d.error)}</div></div>`;
   } else if (!d.data) {
     msg.innerHTML = '<div style="padding:12px">' + '<div class="skeleton"></div>'.repeat(8) + '</div>';
   } else {
-    const { columns, rows, offset } = d.data;
-    const vis = visibleCols(d);
-    const rowHtml = (r) => {
-      const ins = isInsert(d, r), del = !ins && isDeleted(d, r);
-      const rowSel = d.range && r >= d.range.r1 && r <= d.range.r2 && d.range.p1 === 0 && d.range.p2 === vis.length - 1;
-      return `<tr class="${ins ? 'ins' : ''}${del ? ' del' : ''}${rowSel ? ' row-sel' : ''}"><td class="rn" data-rn="${r}">${ins ? '+' : fmtNum(offset + r + 1)}</td>${vis.map((ci) => cellHtml(cellAt(d, r, ci), columns[ci], r, ci, { changed: isChanged(d, r, ci), insert: ins })).join('')}</tr>`;
-    };
-    const all = [];
-    for (let r = 0; r < nRows(d); r++) all.push(rowHtml(r));
-    $('#dv-tbody').innerHTML = all.join('');
+    paintDataRows(true);
     msg.innerHTML = nRows(d) ? '' : `<div class="dv-none">${ic('search')}<b>No rows</b><span>${Object.values(d.filters).some((v) => String(v).trim()) || d.search.trim() ? 'Nothing matches your filters.' : 'This table is empty.'}${canEdit(d) ? ' Press <kbd>Insert</kbd> to add a row.' : ''}</span></div>`;
   }
   renderPager(); renderDataStatus(); renderChangesBar();
+}
+// Renders the rows of the data grid that are near the viewport. Without force it
+// does nothing when the visible window has not changed (used while scrolling).
+function paintDataRows(force = false) {
+  const d = S.dv, grid = $('#dv-grid'), tb = $('#dv-tbody'); if (!grid || !tb || !d.data) return;
+  const n = nRows(d), [start, end] = virtWindow(grid, n);
+  if (!force && d.vwin && d.vwin[0] === start && d.vwin[1] === end && d.vwin[2] === n) return;
+  d.vwin = [start, end, n];
+  const { columns, offset } = d.data;
+  const vis = visibleCols(d);
+  const rowHtml = (r) => {
+    const ins = isInsert(d, r), del = !ins && isDeleted(d, r);
+    const rowSel = d.range && r >= d.range.r1 && r <= d.range.r2 && d.range.p1 === 0 && d.range.p2 === vis.length - 1;
+    return `<tr class="${ins ? 'ins' : ''}${del ? ' del' : ''}${rowSel ? ' row-sel' : ''}"><td class="rn" data-rn="${r}">${ins ? '+' : fmtNum(offset + r + 1)}</td>${vis.map((ci) => cellHtml(cellAt(d, r, ci), columns[ci], r, ci, { changed: isChanged(d, r, ci), insert: ins })).join('')}</tr>`;
+  };
+  const out = [vpad(start, vis.length + 1)];
+  for (let r = start; r < end; r++) out.push(rowHtml(r));
+  out.push(vpad(n - end, vis.length + 1));
+  tb.innerHTML = out.join('');
+  if (n > VIRT_MIN) {
+    if (measureRowH(tb)) return paintDataRows(true);
+    if (!d.colW || d.colW.data !== d.data) d.colW = { data: d.data, w: {} };
+    lockColWidths($('#dv-thead'), d.colW.w);
+  }
 }
 
 // Update selection classes without re-rendering the grid.
@@ -1244,6 +1409,7 @@ function paintSelection() {
   const d = S.dv, tb = $('#dv-tbody'); if (!tb || !d.data) return;
   const vis = visibleCols(d);
   for (const tr of tb.rows) {
+    if (tr.classList.contains('vpad')) continue;
     const r = Number(tr.cells[0]?.dataset.rn);
     tr.classList.toggle('row-sel', !!(d.range && r >= d.range.r1 && r <= d.range.r2 && d.range.p1 === 0 && d.range.p2 === vis.length - 1));
     for (let k = 1; k < tr.cells.length; k++) {
@@ -1257,7 +1423,14 @@ function paintSelection() {
 }
 function scrollToSel(d) {
   if (!d.sel) return;
-  const td = $(`#dv-tbody td[data-r="${d.sel.r}"][data-c="${d.sel.c}"]`);
+  const find = () => $(`#dv-tbody td[data-r="${d.sel.r}"][data-c="${d.sel.c}"]`);
+  let td = find();
+  if (!td) { // row is outside the rendered window: scroll to where it sits, then render it
+    const g = $('#dv-grid'); if (!g) return;
+    const headH = $('#dv-thead')?.offsetHeight || 0, y = d.sel.r * rowH;
+    g.scrollTop = y < g.scrollTop ? y : y + rowH + headH - g.clientHeight;
+    paintDataRows(); td = find();
+  }
   td?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
@@ -1287,6 +1460,7 @@ function startEdit(d, initial) {
   if (isDeleted(d, r)) return toast('This row is marked for deletion. Revert it first (Ctrl+U).');
   const cur = cellAt(d, r, ci);
   if (cur && typeof cur === 'object') return toast('Binary and very long values can only be changed with SQL');
+  if (!$(`#dv-tbody td[data-r="${r}"][data-c="${ci}"]`)) scrollToSel(d);
   const td = $(`#dv-tbody td[data-r="${r}"][data-c="${ci}"]`); if (!td) return;
   closeEditor(false);
   const box = td.getBoundingClientRect(), grid = $('#dv-grid'), gb = grid.getBoundingClientRect();
@@ -1353,6 +1527,44 @@ function gridMenu(x, y) {
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(x, innerWidth - w - 8) + 'px';
   m.style.top = Math.min(y, innerHeight - h - 8) + 'px';
+}
+/* ---- per-column filter operator menu ---- */
+const FILTER_OPS = [
+  ['clear', 'Clear filter'], '-',
+  ['in', 'Filter multiple values…'], ['eq', 'Equals…'], ['ne', 'Does not equal…'], ['null', 'Is NULL'], ['notnull', 'Is not NULL'], '-',
+  ['gt', 'Greater than…'], ['ge', 'Greater than or equal to…'], ['lt', 'Less than…'], ['le', 'Less than or equal to…'], '-',
+  ['contains', 'Contains…'], ['ncontains', 'Does not contain…'], ['begins', 'Begins with…'], ['ends', 'Ends with…'], ['empty', 'Is empty'], ['nempty', 'Is not empty'],
+];
+const FILTER_FMT = { in: (v) => 'IN ' + v, eq: (v) => '=' + v, ne: (v) => '<>' + v, gt: (v) => '>' + v, ge: (v) => '>=' + v, lt: (v) => '<' + v, le: (v) => '<=' + v, contains: (v) => v, ncontains: (v) => '!' + v, begins: (v) => v + '*', ends: (v) => '*' + v };
+// The bare value of a filter expression, without its operator.
+function filterBareValue(expr) {
+  const s = String(expr || '').trim(), up = s.toUpperCase();
+  if (/^(NOT NULL|IS NOT NULL|!NULL|NULL|IS NULL|EMPTY|!EMPTY)$/.test(up)) return '';
+  const m = s.match(/^(?:NOT IN\s+|IN\s+|>=|<=|<>|!=|>|<|=|!)\s*([\s\S]*)$/);
+  return (m ? m[1] : s).replace(/^\*+|\*+$/g, '');
+}
+function filterMenu(btn) {
+  const d = S.dv, col = btn.dataset.col, cur = String(d.filters[col] || '').trim();
+  const m = $('#ctxMenu');
+  m.innerHTML = FILTER_OPS.map((o) => (o === '-' ? '<hr>' : `<button class="cm-item" data-act="dv-fop" data-op="${o[0]}" data-col="${esc(col)}" ${o[0] === 'clear' && !cur ? 'disabled' : ''}><span>${o[1]}</span><kbd></kbd></button>`)).join('');
+  m.style.display = 'block';
+  const r = btn.getBoundingClientRect(), w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+  m.style.top = (r.bottom + h + 8 > innerHeight ? Math.max(8, r.top - h - 4) : r.bottom + 4) + 'px';
+}
+function applyFilterOp(col, op) {
+  const d = S.dv, input = $(`#dv-thead input[data-input="dv-filter"][data-col="${CSS.escape(col)}"]`);
+  const fixed = { clear: '', null: 'NULL', notnull: 'NOT NULL', empty: 'EMPTY', nempty: '!EMPTY' };
+  const v = filterBareValue(d.filters[col]);
+  const expr = op in fixed ? fixed[op] : FILTER_FMT[op](v);
+  d.filters[col] = expr;
+  if (input) { input.value = expr; input.classList.toggle('on', !!expr.trim()); }
+  if (!(op in fixed) && !v && input) { // needs a value: let the user type it
+    input.focus();
+    const pos = op === 'begins' ? 0 : expr.length; input.setSelectionRange(pos, pos);
+    return;
+  }
+  clearTimeout(dvTimer); d.offset = 0; fetchData(d);
 }
 const closeMenu = () => { const m = $('#ctxMenu'); if (m) m.style.display = 'none'; };
 
@@ -1619,6 +1831,8 @@ function renderQueryResults() {
       ${s ? `<button class="btn sm ghost" data-act="q-copy-tsv" title="Copy this result as tab-separated text (paste into a spreadsheet)">${ic('copy')}Copy all</button>` : ''}</div>
     <div class="rbody" id="q-rbody">${body}</div>
     <div class="dv-status q-status" id="q-status">${qStatusHtml(d)}</div>`;
+  if (!s || d.resTab === 'msg') d.qview = null;
+  else paintQueryRows(true);
 }
 function tickElapsed(d) {
   const t = () => { const e = $('#q-elapsed'); if (!e || !d.loading || S.dv !== d) return; e.textContent = fmtDur((Date.now() - d.startedAt) / 1000); setTimeout(t, 200); };
@@ -1657,16 +1871,33 @@ function sortedRows(d, set) {
 }
 function resultGridHtml(d, set) {
   if (!set.columns.length) return '<div class="q-wait muted">No columns</div>';
-  const order = sortedRows(d, set);
+  d.qview = { set, order: sortedRows(d, set), win: null, colW: d.qview?.set.rows === set.rows ? d.qview.colW : {} };
   const head = set.columns.map((c, i) => `<th class="h ${d.qsort?.c === i ? 'sorted' : ''}" data-act="q-sort" data-c="${i}" title="${esc(c.table ? c.table + '.' : '')}${esc(c.name)} · ${esc(c.dataType)}"><div class="th"><span class="cn">${esc(c.name)}</span><span class="si">${d.qsort?.c === i ? ic(d.qsort.dir === 'desc' ? 'sortDown' : 'sortUp') : ''}</span></div><small>${esc(c.dataType)}</small></th>`).join('');
-  const rows = order.map((ri, k) => `<tr><td class="rn">${k + 1}</td>${set.rows[ri].map((v, ci) => {
-    const sel = d.sel && d.sel.r === ri && d.sel.c === ci ? ' sel' : '';
-    if (v === null) return `<td class="null${sel}" data-qr="${ri}" data-qc="${ci}">NULL</td>`;
-    if (typeof v === 'object' && v.bin != null) return `<td class="bin${sel}" data-qr="${ri}" data-qc="${ci}">(${fmtBytes(v.bin)} binary)</td>`;
-    const s = typeof v === 'object' ? v.text + '…' : String(v);
-    return `<td class="${set.columns[ci].num ? 'num' : ''}${sel}" data-qr="${ri}" data-qc="${ci}">${esc((s.length > 200 ? s.slice(0, 200) + '…' : s).replace(/\s+/g, ' '))}</td>`;
-  }).join('')}</tr>`).join('');
-  return `<table class="grid"><thead><tr><th class="rn"></th>${head}</tr></thead><tbody id="q-tbody">${rows}</tbody></table>${set.total > set.rows.length ? `<div class="q-capped">${ic('info')}Showing the first ${fmtNum(set.rows.length)} of ${fmtNum(set.total)} rows. Add a LIMIT or a WHERE to narrow it down.</div>` : ''}`;
+  return `<table class="grid"><thead><tr><th class="rn"></th>${head}</tr></thead><tbody id="q-tbody"></tbody></table>${set.total > set.rows.length ? `<div class="q-capped">${ic('info')}Showing the first ${fmtNum(set.rows.length)} of ${fmtNum(set.total)} rows. Add a LIMIT or a WHERE to narrow it down.</div>` : ''}`;
+}
+// Renders the query result rows near the viewport (see virtWindow).
+function paintQueryRows(force = false) {
+  const d = S.dv, q = d.qview, sc = $('#q-rbody'), tb = $('#q-tbody'); if (!q || !sc || !tb) return;
+  const { set, order } = q, n = order.length, [start, end] = virtWindow(sc, n);
+  if (!force && q.win && q.win[0] === start && q.win[1] === end) return;
+  q.win = [start, end];
+  const out = [vpad(start, set.columns.length + 1)];
+  for (let k = start; k < end; k++) {
+    const ri = order[k];
+    out.push(`<tr><td class="rn">${k + 1}</td>${set.rows[ri].map((v, ci) => {
+      const sel = d.sel && d.sel.r === ri && d.sel.c === ci ? ' sel' : '';
+      if (v === null) return `<td class="null${sel}" data-qr="${ri}" data-qc="${ci}">NULL</td>`;
+      if (typeof v === 'object' && v.bin != null) return `<td class="bin${sel}" data-qr="${ri}" data-qc="${ci}">(${fmtBytes(v.bin)} binary)</td>`;
+      const s = typeof v === 'object' ? v.text + '…' : String(v);
+      return `<td class="${set.columns[ci].num ? 'num' : ''}${sel}" data-qr="${ri}" data-qc="${ci}">${esc((s.length > 200 ? s.slice(0, 200) + '…' : s).replace(/\s+/g, ' '))}</td>`;
+    }).join('')}</tr>`);
+  }
+  out.push(vpad(n - end, set.columns.length + 1));
+  tb.innerHTML = out.join('');
+  if (n > VIRT_MIN) {
+    if (measureRowH(tb)) return paintQueryRows(true);
+    lockColWidths(sc.querySelector('thead'), q.colW);
+  }
 }
 function qStatusHtml(d) {
   const sets = resultSets(d), set = typeof d.resTab === 'number' ? sets[d.resTab] : null;
@@ -2073,6 +2304,7 @@ function onJobEvent(m) {
   if (m.type === 'progress') {
     j.progress = m.data;
     updateJob();
+    if (S.view === 'home') updateHomeJob();
     if (Date.now() - navTick > 1000) { navTick = Date.now(); renderNav(); }
   } else if (m.type === 'log') {
     j.logs.push(m.data);
@@ -2092,6 +2324,7 @@ function onJobEvent(m) {
     j.logs.push({ level: j.status === 'success' ? 'success' : j.status === 'failed' ? 'error' : 'warn', message: `${msg} in ${fmtDur(m.data.durationMs / 1000)}`, t: Date.now() });
     renderNav();
     if (S.view === 'job') renderJob();
+    if (S.view === 'home') renderHome();
     if (j.kind === 'fetch') {
       if (j.status === 'success') toast(`Downloaded ${j.title} (${fmtBytes(m.data.fileSize)})`, 'ok');
       const qa = QS(j.quick); loadQuick(qa).then(() => { if (j.status === 'success' && j.restoreAfter && S.job === j) quickRestore(j.file, qa); });
@@ -2281,7 +2514,7 @@ async function startCsv() {
 }
 
 /* ================= HISTORY ================= */
-async function loadHistoryCount() { try { S.history = await api.history.list(); renderNav(); if (S.view === 'history') renderHistory(); } catch {} }
+async function loadHistoryCount() { try { S.history = await api.history.list(); renderNav(); if (S.view === 'history') renderHistory(); if (S.view === 'home') renderHome(); } catch {} }
 async function loadHistory() { renderHistory(); await loadHistoryCount(); }
 function renderHistory() {
   const el = $('#view-history');
@@ -2309,24 +2542,53 @@ function renderHistory() {
 let dlg = null;
 function openConn(id) {
   const c = id ? connById(id) : null;
-  dlg = { id: c?.id, name: c?.name || '', color: c?.color || COLORS[S.conns.length % COLORS.length], host: c?.host || '127.0.0.1', port: c?.port || 3306, user: c?.user || 'root', password: '', ssl: !!c?.ssl, hasPassword: !!c?.hasPassword, test: null };
+  const sh = c?.ssh || {};
+  dlg = { id: c?.id, tab: 'general', name: c?.name || '', color: c?.color || COLORS[S.conns.length % COLORS.length], host: c?.host || '127.0.0.1', port: c?.port || 3306, user: c?.user || 'root', password: '', ssl: !!c?.ssl, hasPassword: !!c?.hasPassword, test: null,
+    ssh: { enabled: !!sh.enabled, host: sh.host || '', port: sh.port || 22, jump: sh.jump || '', auth: sh.auth || 'password', user: sh.user || '', keyFile: sh.keyFile || '', password: '', passphrase: '', hasPassword: !!sh.hasPassword, hasPassphrase: !!sh.hasPassphrase }, agent: null };
   renderDlg();
   $('#connDialog').showModal();
 }
+function sshTabHtml() {
+  const d = dlg, h = d.ssh, off = h.enabled ? '' : 'disabled';
+  const unchanged = (has) => (d.id && has ? '•••••• (unchanged)' : '');
+  const agent = d.agent === null ? `<div class="ssh-agent">${ic('loader', 'spin')}Looking for SSH agent…</div>`
+    : d.agent.found ? `<div class="ssh-agent ok">${ic('check')}SSH agent found</div>`
+    : `<div class="ssh-agent bad">${ic('alert')}No SSH agent found (SSH_AUTH_SOCK is not set)</div>`;
+  return `
+      <label class="check-inline">${sw('data-change="dlg-ssh-on"', h.enabled)}<span>Use SSH tunnel</span></label>
+      <fieldset class="ssh-fields" ${off}>
+      <div class="row"><div class="field" style="flex:3"><label>SSH host</label><input class="input mono" data-dlg="ssh.host" value="${esc(h.host)}" placeholder="bastion.example.com" spellcheck="false"></div>
+        <div class="field" style="flex:1"><label>Port</label><input class="input mono" data-dlg="ssh.port" value="${esc(h.port)}" inputmode="numeric"></div></div>
+      <div class="field"><label>Bastion host (jump host) <span class="lbl-note">optional</span></label><input class="input mono" data-dlg="ssh.jump" value="${esc(h.jump)}" placeholder="user@jump.example.com:22" spellcheck="false"></div>
+      <div class="field"><label>SSH authentication</label><select class="select" data-change="dlg-ssh-auth">
+        ${[['password', 'Username & password'], ['key', 'Key file'], ['agent', 'SSH agent']].map(([v, l]) => `<option value="${v}" ${h.auth === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      ${h.auth === 'password' ? `<div class="row"><div class="field"><label>Login</label><input class="input mono" data-dlg="ssh.user" value="${esc(h.user)}" spellcheck="false"></div>
+        <div class="field"><label>Password</label><input class="input mono" type="password" data-dlg="ssh.password" value="${esc(h.password)}" placeholder="${unchanged(h.hasPassword)}"></div></div>`
+      : h.auth === 'key' ? `<div class="field"><label>Login</label><input class="input mono" data-dlg="ssh.user" value="${esc(h.user)}" spellcheck="false"></div>
+        <div class="field"><label>Private key file</label><div class="input-btn"><input class="input mono" data-dlg="ssh.keyFile" value="${esc(h.keyFile)}" placeholder="~/.ssh/id_ed25519" spellcheck="false"><button class="btn" data-act="dlg-ssh-key">${ic('folder')}Browse</button></div></div>
+        <div class="field"><label>Key passphrase <span class="lbl-note">if the key is encrypted</span></label><input class="input mono" type="password" data-dlg="ssh.passphrase" value="${esc(h.passphrase)}" placeholder="${unchanged(h.hasPassphrase)}"></div>`
+      : `<div class="field"><label>Login</label><input class="input mono" data-dlg="ssh.user" value="${esc(h.user)}" spellcheck="false"></div>${agent}`}
+      </fieldset>
+      <p class="hint">With a tunnel, the Host on the General tab is resolved by the SSH server, so <code>localhost</code> means MySQL on that machine.</p>`;
+}
 function renderDlg() {
   const d = dlg;
+  if (d.tab === 'ssh' && d.ssh.auth === 'agent' && d.agent === null) api.connections.sshAgent().then((a) => { dlg.agent = a; if (dlg.tab === 'ssh') renderDlg(); }).catch(() => { dlg.agent = { found: false }; });
   $('#connDialog').innerHTML = `<div class="modal">
     <div class="modal-head"><div class="logo" style="width:36px;height:36px;background:${esc(d.color)};box-shadow:none">${ic('server')}</div>
-      <div><h3>${d.id ? 'Edit connection' : 'New connection'}</h3><p>MySQL or MariaDB over TCP</p></div>
+      <div><h3>${d.id ? 'Edit connection' : 'New connection'}</h3><p>MySQL or MariaDB over ${d.ssh.enabled ? 'an SSH tunnel' : 'TCP'}</p></div>
       <button class="icon-btn" data-act="dlg-close">${ic('x')}</button></div>
-    <div class="modal-body">
+    <div class="modal-tabs"><div class="seg">
+      <button class="${d.tab === 'general' ? 'on' : ''}" data-act="dlg-tab" data-tab="general">General</button>
+      <button class="${d.tab === 'ssh' ? 'on' : ''}" data-act="dlg-tab" data-tab="ssh">SSH Tunnel${d.ssh.enabled ? '<i class="tab-dot"></i>' : ''}</button></div></div>
+    <div class="modal-body">${d.tab === 'ssh' ? sshTabHtml() : `
       <div class="field"><label>Name</label><input class="input" data-dlg="name" value="${esc(d.name)}" placeholder="Local dev, Staging…"></div>
       <div class="field"><label>Color</label><div class="swatches">${COLORS.map((c) => `<span class="swatch ${c === d.color ? 'on' : ''}" style="background:${c}" data-act="dlg-color" data-color="${c}"></span>`).join('')}</div></div>
-      <div class="row"><div class="field" style="flex:3"><label>Host</label><input class="input mono" data-dlg="host" value="${esc(d.host)}" spellcheck="false"></div>
+      <div class="row"><div class="field" style="flex:3"><label>Host${d.ssh.enabled ? ' <span class="lbl-note">as seen from the SSH server</span>' : ''}</label><input class="input mono" data-dlg="host" value="${esc(d.host)}" spellcheck="false"></div>
         <div class="field" style="flex:1"><label>Port</label><input class="input mono" data-dlg="port" value="${esc(d.port)}" inputmode="numeric"></div></div>
       <div class="row"><div class="field"><label>User</label><input class="input mono" data-dlg="user" value="${esc(d.user)}" spellcheck="false"></div>
         <div class="field"><label>Password</label><input class="input mono" type="password" data-dlg="password" value="${esc(d.password)}" placeholder="${d.id && d.hasPassword ? '•••••• (unchanged)' : ''}"></div></div>
-      <label class="check-inline">${sw('data-dlg-check="ssl"', d.ssl)}<span>Require SSL/TLS</span></label>
+      <label class="check-inline">${sw('data-dlg-check="ssl"', d.ssl)}<span>Require SSL/TLS</span></label>`}
       <div id="dlg-test">${testHtml()}</div>
     </div>
     <div class="modal-foot">
@@ -2340,17 +2602,26 @@ function testHtml() {
   const t = dlg.test;
   if (!t) return '';
   if (t.loading) return `<div class="test-result">${ic('loader', 'spin')}Connecting…</div>`;
-  if (t.ok) return `<div class="test-result ok">${ic('check')}Connected to ${esc(t.version)} in ${t.ms} ms</div>`;
+  if (t.ok) return `<div class="test-result ok">${ic('check')}Connected to ${esc(t.version)}${t.ssh ? ' through the SSH tunnel' : ''} in ${t.ms} ms</div>`;
   return `<div class="test-result bad">${ic('alert')}${esc(t.error)}</div>`;
 }
 function dlgPayload() {
   const d = dlg;
-  return { id: d.id, name: d.name.trim(), color: d.color, host: d.host.trim(), port: Number(d.port) || 3306, user: d.user.trim(), ssl: d.ssl, password: d.password === '' && d.id && d.hasPassword ? undefined : d.password };
+  const h = d.ssh, keep = (v, has) => (v === '' && d.id && has ? undefined : v);
+  const ssh = { enabled: h.enabled, host: h.host.trim(), port: Number(h.port) || 22, jump: h.jump.trim(), auth: h.auth, user: h.user.trim(), keyFile: h.keyFile.trim(), password: keep(h.password, h.hasPassword), passphrase: keep(h.passphrase, h.hasPassphrase) };
+  return { id: d.id, name: d.name.trim(), color: d.color, host: d.host.trim(), port: Number(d.port) || 3306, user: d.user.trim(), ssl: d.ssl, password: keep(d.password, d.hasPassword), ssh };
 }
 
 /* ================= EVENTS ================= */
 const actions = {
   nav: (el) => go(el.dataset.view),
+  'home-query': () => openQuery(null, null),
+  'home-hist': (el) => { S.histOpen = el.dataset.id; go('history'); },
+  'home-tab': (el) => { const t = S.tabs.find((x) => x.key === el.dataset.key); if (t) activateTab(t); },
+  'home-conn': (el) => { const t = T(el.dataset.id); if (!t.open) { t.open = true; saveTreeOpen(); loadTreeDbs(el.dataset.id); } renderConns(); document.querySelector(`.tree-row.conn[data-id="${CSS.escape(el.dataset.id)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); },
+  'home-restore': (el) => { Object.assign(S.r, { dbMode: 'existing', dbFilter: '' }); go('restore'); selectRestoreConn(el.dataset.id); },
+  'home-export': (el) => { S.e.allTables = true; go('export'); selectExportConn(el.dataset.id); },
+  'upd-whatsnew': () => showWhatsNew(true),
   'add-conn': () => openConn(null),
   'edit-conn': (el) => openConn(el.dataset.id),
   'pick-dump': async () => { const p = await guard(() => api.pickFile('dump')); if (p) loadDump(p); },
@@ -2502,6 +2773,8 @@ const actions = {
   'g-save': () => { closeMenu(); gridOps.save(S.dv); },
   'g-sql': () => { closeMenu(); gridOps.showSql(S.dv); },
   'g-filter': () => { closeMenu(); gridOps.filterValue(S.dv); },
+  'dv-fmenu': (el, ev) => { ev.stopPropagation(); filterMenu(el); },
+  'dv-fop': (el) => { closeMenu(); applyFilterOp(el.dataset.col, el.dataset.op); },
   'g-hide': () => { closeMenu(); gridOps.hideColumn(S.dv); },
   'tab-open': (el) => { const t = S.tabs.find((x) => x.key === el.dataset.key); if (t && t !== S.dv) activateTab(t); },
   'tab-close': (el, ev) => { ev.stopPropagation(); closeTab(el.dataset.key); },
@@ -2518,6 +2791,8 @@ const actions = {
   noop: () => {},
   'dlg-close': () => $('#connDialog').close(),
   'dlg-color': (el) => { dlg.color = el.dataset.color; renderDlg(); },
+  'dlg-tab': (el) => { dlg.tab = el.dataset.tab; renderDlg(); ($('#connDialog .modal-body input:not([type=checkbox])') || {}).focus?.(); },
+  'dlg-ssh-key': async () => { const p = await guard(() => api.pickFile('sshkey')); if (p) { dlg.ssh.keyFile = p; renderDlg(); } },
   'dlg-test': async () => {
     dlg.test = { loading: true }; $('#dlg-test').innerHTML = testHtml();
     try { dlg.test = { ok: true, ...(await api.connections.test(dlgPayload())) }; } catch (e) { dlg.test = { ok: false, error: e.message }; }
@@ -2526,10 +2801,12 @@ const actions = {
   'dlg-save': async () => {
     const p = dlgPayload();
     if (!p.host || !p.user) return toast('Host and user are required');
+    if (p.ssh.enabled && !p.ssh.host) { dlg.tab = 'ssh'; renderDlg(); return toast('Enter the SSH host, or turn the SSH tunnel off'); }
     await guard(async () => {
       const saved = await api.connections.save(p);
       S.conns = await api.connections.list();
       $('#connDialog').close();
+      if (S.view === 'home') renderHome();
       const t = T(saved.id); t.open = true; saveTreeOpen();
       loadTreeDbs(saved.id);
       toast(`Saved "${saved.name}"`, 'ok');
@@ -2550,11 +2827,13 @@ const actions = {
     delete S.tree[dlg.id]; saveTreeOpen();
     S.conns = await api.connections.list();
     $('#connDialog').close();
-    renderConns(); if (S.view === 'restore') renderRestore(); if (S.view === 'csv') renderCsv(); if (S.view === 'export') renderExport(); if (S.view === 'data') renderData();
+    renderConns(); if (S.view === 'home') renderHome(); if (S.view === 'restore') renderRestore(); if (S.view === 'csv') renderCsv(); if (S.view === 'export') renderExport(); if (S.view === 'data') renderData();
   },
 };
 
 const changes = {
+  'dlg-ssh-on': (el) => { dlg.ssh.enabled = el.checked; renderDlg(); },
+  'dlg-ssh-auth': (el) => { dlg.ssh.auth = el.value; renderDlg(); },
   'r-conn': (el) => selectRestoreConn(el.value),
   'scp-date': (el) => { const c = S.scp; if (!el.value) return; c.date = el.value; c.name = patternName(c.pattern, el.value); const n = $('[data-input="scp-name"]'); if (n) n.value = c.name; renderScpCmd(); renderScpRemote(); renderScpStatus(); },
   'scp-host': (el) => { const c = S.scp; c.host = el.value.trim() || presetById(c.pid)?.scp?.host || ''; store.set(`q.${c.pid}.scpHost`, c.host); renderScpCmd(); loadRemote(); },
@@ -2631,6 +2910,14 @@ function refreshCsvButton() {
   b.toggleAttribute('disabled', !ok);
 }
 
+let virtRaf = 0;
+document.addEventListener('scroll', (e) => {
+  const id = e.target?.id;
+  if ((id !== 'dv-grid' && id !== 'q-rbody') || virtRaf) return;
+  virtRaf = requestAnimationFrame(() => { virtRaf = 0; if (id === 'dv-grid') paintDataRows(); else paintQueryRows(); });
+}, true);
+window.addEventListener('resize', () => { paintDataRows(); paintQueryRows(); });
+
 document.addEventListener('click', (e) => {
   const qtd = e.target.closest('#q-tbody td[data-qr]');
   if (qtd) {
@@ -2655,7 +2942,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset.input) inputs[el.dataset.input]?.(el, e);
-  if (el.dataset.dlg) { dlg[el.dataset.dlg] = el.value; }
+  if (el.dataset.dlg) { const [a, b] = el.dataset.dlg.split('.'); if (b) dlg[a][b] = el.value; else dlg[a] = el.value; }
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && $('#connDialog').open && e.target.tagName === 'INPUT') actions['dlg-save']();
@@ -2701,7 +2988,7 @@ document.addEventListener('mousedown', (e) => {
 document.addEventListener('mouseover', (e) => {
   if (!gridDrag || !(e.buttons & 1)) { gridDrag = null; return; }
   const d = S.dv;
-  if (gridDrag.rows) { const rn = e.target.closest('#dv-tbody tr'); if (rn) selectRows(d, gridDrag.from, Number(rn.cells[0].dataset.rn)); return; }
+  if (gridDrag.rows) { const rn = e.target.closest('#dv-tbody tr:not(.vpad)'); if (rn) selectRows(d, gridDrag.from, Number(rn.cells[0].dataset.rn)); return; }
   const td = e.target.closest('#dv-tbody td[data-r]');
   if (td) selectTo(d, Number(td.dataset.r), Number(td.dataset.c), true);
 });
@@ -2785,7 +3072,7 @@ document.addEventListener('drop', (e) => {
   $('#themeBtn').innerHTML = ic('palette');
   initUpdates();
   setTimeout(() => showWhatsNew(false), 600);
-  renderEnv(); renderConns(); go('restore');
+  renderEnv(); renderConns(); go('home');
   for (const id of openIds) if (connById(id)) loadTreeDbs(id);
   if (S.e.connId) selectExportConn(S.e.connId);
   const savedTabs = store.get('tabs', null);

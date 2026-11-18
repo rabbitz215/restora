@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.8 — 2026-11-18
+- Connect through an SSH tunnel: a new SSH Tunnel tab in the connection dialog, with password, key file (with passphrase) or SSH agent login, and an optional bastion / jump host
+- Browsing, the SQL editor, restores, exports and CSV imports all work over the tunnel; Test connection says when it went through SSH
+- SSH passwords and key passphrases are encrypted with your OS keyring, like database passwords
+- Filter options button next to every column filter: equals, does not equal, greater / less than, contains, begins / ends with, is (not) NULL, is (not) empty
+- New "Filter multiple values" filter: type IN a,b,c (or NOT IN a,b,c) to match a list of values
+- Large tables and query results scroll smoothly: only the rows on screen are drawn
+- New Home page, shown when Restora opens: quick actions for restore, export, CSV import and a new SQL query, plus your quick-restore shortcuts
+- A "Get set up" checklist on Home when something is missing: no connection yet, or the mysql / mysqldump tools aren't found
+- Stats on Home: connections, jobs this week, success rate and how much data you restored in the last 30 days
+- Recent activity on Home: your last jobs with status, target and duration; click one to open it in History
+- Reopen your table and SQL tabs straight from Home
+- Your connections on Home, with buttons to query, restore, export or edit each one
+- A running restore, export or import shows a live progress banner on Home, so you can leave the job screen while it works
+- "What's new" can now be opened any time from the Home page
+
 ## 1.0.7 — 2026-11-17
 - Clearer message when installing an update fails on Linux, including the command to install it yourself
 - Update activity is written to updater.log in Restora's settings folder, to make update problems easy to diagnose

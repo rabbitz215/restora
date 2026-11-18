@@ -9,6 +9,7 @@ const { ExportJob, dumpToolInfo } = require('./lib/export');
 const presets = require('./lib/presets');
 const { FetchJob, remoteList } = require('./lib/fetch');
 const query = require('./lib/query');
+const tunnel = require('./lib/tunnel');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 
@@ -59,11 +60,18 @@ const handle = (ch, fn) => ipcMain.handle(ch, async (_e, ...args) => {
   try { return { ok: true, data: await fn(...args) }; } catch (err) { return { ok: false, error: err.sqlMessage || err.message || String(err) }; }
 });
 
-function resolveConn(c) {
+// Fills in saved secrets for a connection id / dialog payload (blank = unchanged).
+function savedConn(c) {
   if (typeof c === 'string') return store.getConnection(c);
-  if (c.id && (c.password === undefined || c.password === null)) return { ...store.getConnection(c.id), ...c, password: store.getConnection(c.id).password };
-  return c;
+  if (!c.id) return c;
+  let saved = null;
+  try { saved = store.getConnection(c.id); } catch { return c; }
+  const out = { ...saved, ...c, password: c.password ?? saved.password };
+  if (c.ssh) out.ssh = { ...c.ssh, password: c.ssh.password ?? saved.ssh?.password ?? '', passphrase: c.ssh.passphrase ?? saved.ssh?.passphrase ?? '' };
+  return out;
 }
+// Same, routed through the connection's SSH tunnel when it has one.
+const resolveConn = (c) => tunnel.route(savedConn(c));
 
 if (process.env.RESTORA_PROFILE) app.setPath('userData', process.env.RESTORA_PROFILE);
 
@@ -79,18 +87,22 @@ app.whenReady().then(() => {
   handle('conn:list', () => store.listConnections());
   handle('conn:save', (c) => store.saveConnection(c));
   handle('conn:delete', (id) => store.deleteConnection(id));
-  handle('conn:test', (c) => db.test(resolveConn(c)));
-  handle('db:list', (id) => db.listDatabases(resolveConn(id)));
-  handle('db:tables', (id, name) => db.listTables(resolveConn(id), name));
-  handle('db:stats', (id, name) => db.dbStats(resolveConn(id), name));
-  handle('db:collations', (id) => db.serverCollations(resolveConn(id)));
-  handle('db:create', (id, name, collation) => db.createDatabase(resolveConn(id), name, collation));
+  handle('conn:test', async (c) => {
+    const conn = await tunnel.route(savedConn(c), { fresh: true });
+    try { return { ...(await db.test(conn)), ssh: !!conn.tunnel }; } finally { conn.closeTunnel?.(); }
+  });
+  handle('ssh:agent', () => tunnel.agentInfo());
+  handle('db:list', async (id) => db.listDatabases(await resolveConn(id)));
+  handle('db:tables', async (id, name) => db.listTables(await resolveConn(id), name));
+  handle('db:stats', async (id, name) => db.dbStats(await resolveConn(id), name));
+  handle('db:collations', async (id) => db.serverCollations(await resolveConn(id)));
+  handle('db:create', async (id, name, collation) => db.createDatabase(await resolveConn(id), name, collation));
   handle('table:sql', (dbName, def) => db.createTableSql(dbName, def));
-  handle('table:create', (id, dbName, def) => db.createTable(resolveConn(id), dbName, def));
-  handle('db:objects', (id, name) => db.listObjects(resolveConn(id), name));
-  handle('data:preview', (id, dbName, table, changes) => db.previewEdits(resolveConn(id), dbName, table, changes));
-  handle('data:save', (id, dbName, table, changes) => db.saveEdits(resolveConn(id), dbName, table, changes));
-  handle('data:browse', (id, name, table, q) => db.browse(resolveConn(id), name, table, q));
+  handle('table:create', async (id, dbName, def) => db.createTable(await resolveConn(id), dbName, def));
+  handle('db:objects', async (id, name) => db.listObjects(await resolveConn(id), name));
+  handle('data:preview', async (id, dbName, table, changes) => db.previewEdits(await resolveConn(id), dbName, table, changes));
+  handle('data:save', async (id, dbName, table, changes) => db.saveEdits(await resolveConn(id), dbName, table, changes));
+  handle('data:browse', async (id, name, table, q) => db.browse(await resolveConn(id), name, table, q));
   handle('file:save', async ({ defaultPath, gzip }) => {
     const r = await dialog.showSaveDialog(win, { defaultPath, filters: [gzip ? { name: 'Compressed SQL', extensions: ['gz'] } : { name: 'SQL', extensions: ['sql'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] });
     return r.canceled ? null : r.filePath;
@@ -100,6 +112,10 @@ app.whenReady().then(() => {
   handle('history:clear', () => store.clearHistory());
 
   handle('file:pick', async (kind) => {
+    if (kind === 'sshkey') {
+      const r = await dialog.showOpenDialog(win, { title: 'Choose SSH private key', defaultPath: path.join(require('os').homedir(), '.ssh'), properties: ['openFile', 'showHiddenFiles'] });
+      return r.canceled ? null : r.filePaths[0];
+    }
     const filters = kind === 'csv'
       ? [{ name: 'CSV / TSV', extensions: ['csv', 'tsv', 'txt'] }]
       : [{ name: 'SQL dumps', extensions: ['sql', 'gz'] }];
@@ -115,7 +131,7 @@ app.whenReady().then(() => {
   });
 
   handle('restore:start', async (opts) => {
-    const conn = resolveConn(opts.connId);
+    const conn = await resolveConn(opts.connId);
     const id = crypto.randomUUID();
     const emit = (type, data) => send('job:event', { id, type, data });
     await db.prepareDatabase(conn, opts.database, { create: opts.createDb, dropFirst: opts.dropFirst });
@@ -133,7 +149,7 @@ app.whenReady().then(() => {
   });
 
   handle('csv:start', async (opts) => {
-    const conn = resolveConn(opts.connId);
+    const conn = await resolveConn(opts.connId);
     const id = crypto.randomUUID();
     const emit = (type, data) => send('job:event', { id, type, data });
     const job = new csv.CsvJob(id, { ...opts, conn }, emit);
@@ -148,7 +164,7 @@ app.whenReady().then(() => {
   });
 
   handle('export:start', async (opts) => {
-    const conn = resolveConn(opts.connId);
+    const conn = await resolveConn(opts.connId);
     const id = crypto.randomUUID();
     const emit = (type, data) => send('job:event', { id, type, data });
     if (!fs.existsSync(path.dirname(opts.file))) throw new Error('Folder does not exist: ' + path.dirname(opts.file));
@@ -170,7 +186,7 @@ app.whenReady().then(() => {
     const p = getPreset(id), c = p.connection;
     if (!c || !c.user) return null;
     const local = (h) => ['127.0.0.1', 'localhost', '::1'].includes(String(h || '127.0.0.1').trim());
-    const hit = store.listConnections().find((x) => (local(c.host) ? local(x.host) : x.host === c.host) && Number(x.port) === (Number(c.port) || 3306) && x.user === c.user);
+    const hit = store.listConnections().find((x) => !x.ssh?.enabled && (local(c.host) ? local(x.host) : x.host === c.host) && Number(x.port) === (Number(c.port) || 3306) && x.user === c.user);
     if (hit) return hit.id;
     return store.saveConnection({ name: `${p.name} (local)`, color: '#fb923c', host: c.host || '127.0.0.1', port: Number(c.port) || 3306, user: c.user, password: c.password || '' }).id;
   });
@@ -179,7 +195,7 @@ app.whenReady().then(() => {
     folder = folder || p.folder; database = database || p.database;
     const dumps = folder ? presets.listDumps(folder, p.filePattern) : [];
     let local = null, localError = null;
-    if (connId && database) { try { local = await presets.localState(resolveConn(connId), database); } catch (e) { localError = e.sqlMessage || e.message; } }
+    if (connId && database) { try { local = await presets.localState(await resolveConn(connId), database); } catch (e) { localError = e.sqlMessage || e.message; } }
     const current = local ? presets.matchCurrent(dumps, local, store.history(), database) : null;
     return { preset: presets.publicPreset(p), folder, folderExists: !!folder && fs.existsSync(folder), database, dumps, local, localError, current };
   });
@@ -198,8 +214,8 @@ app.whenReady().then(() => {
     });
     return { id };
   });
-  handle('sql:run', (tabId, connId, dbName, sql, opts) => query.run(tabId, resolveConn(connId), dbName, sql, opts));
-  handle('sql:cancel', (tabId, connId) => query.cancel(tabId, resolveConn(connId)));
+  handle('sql:run', async (tabId, connId, dbName, sql, opts) => query.run(tabId, await resolveConn(connId), dbName, sql, opts));
+  handle('sql:cancel', async (tabId, connId) => query.cancel(tabId, await resolveConn(connId)));
   handle('sql:close', (tabId) => query.close(tabId));
   handle('sql:risky', (sql) => query.riskyStatements(sql));
   ipcMain.handle('theme:bg', (_e, c) => {
@@ -282,6 +298,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   for (const j of jobs.values()) j.cancel();
   db.closePools();
+  tunnel.closeAllTunnels();
   query.closeAll();
   app.quit();
 });

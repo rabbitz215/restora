@@ -8,7 +8,7 @@ const call = async (ch, ...args) => {
 
 contextBridge.exposeInMainWorld('api', {
   env: () => call('env:info'),
-  connections: { list: () => call('conn:list'), save: (c) => call('conn:save', c), remove: (id) => call('conn:delete', id), test: (c) => call('conn:test', c) },
+  connections: { list: () => call('conn:list'), save: (c) => call('conn:save', c), remove: (id) => call('conn:delete', id), test: (c) => call('conn:test', c), sshAgent: () => call('ssh:agent') },
   databases: (id) => call('db:list', id),
   tables: (id, db) => call('db:tables', id, db),
   stats: (id, db) => call('db:stats', id, db),

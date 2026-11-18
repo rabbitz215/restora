@@ -45,6 +45,16 @@ and the `.deb` (which asks for your password to install). You can turn automatic
 
 ## Features
 
+### Home
+- Opens on a **Home** page: quick actions (restore, export, CSV import, new SQL query) and your quick-restore shortcuts.
+- Stats at a glance (connections, jobs this week, success rate, data restored in the last 30 days), recent activity and your open tabs.
+- A live progress banner while a job runs, and a setup checklist when a connection or the `mysql` / `mysqldump` tools are missing.
+
+### Connections & SSH tunnels
+- Connect directly over TCP (optionally with SSL/TLS) or through an **SSH tunnel**.
+- SSH login with a password, a private key file (with passphrase) or your SSH agent, plus an optional **bastion / jump host**.
+- Everything works over the tunnel: browsing, the SQL editor, restores, exports and CSV imports. No system `ssh` needed for it.
+
 ### Restore dumps
 - `.sql` and `.sql.gz`, any size: the file is streamed, never loaded into memory.
 - Live progress ring, speed, elapsed time, ETA and the table currently being restored, with a **Cancel** button.
@@ -69,7 +79,9 @@ and the `.deb` (which asks for your password to install). You can turn automatic
 - Create a **new database** (pick the collation) or a **new table** (columns, types, NULL, default, primary key, auto increment, with a live SQL preview) right from the tree.
 - Each table opens in its own **tab**, grouped by database (even across connections); tabs come back after a restart.
 - Per-column filters under every header, search across all columns, click/Shift-click sorting, paging (50–1000 rows).
-  Filter syntax: `text` contains · `=x` exact · `!x` not containing · `>5` `<=5` · `ab*` wildcard · `NULL` / `NOT NULL` · `EMPTY`.
+  Filter syntax: `text` contains · `=x` exact · `!x` not containing · `>5` `<=5` · `ab*` wildcard · `IN a,b,c` / `NOT IN a,b,c` · `NULL` / `NOT NULL` · `EMPTY`.
+  Or use the ▾ button next to a filter to pick an operator (equals, greater than, begins with, multiple values…).
+- Large tables and query results scroll smoothly: only the rows on screen are drawn.
 - Side panel: show/hide columns (remembered per table) and **relationships**, both what the table references and what references it.
   Click one to open the related table filtered to the selected row; foreign-key cells have a → button to jump to the referenced row.
 - **Edit data like a spreadsheet**: double-click or start typing to edit, drag to select cells or rows, `Ctrl+0` sets NULL,
@@ -98,7 +110,7 @@ and the `.deb` (which asks for your password to install). You can turn automatic
 
 ### Also
 - **History** of every restore, export and import, with timing, sizes and errors.
-- Connections are stored locally; passwords are encrypted with your OS keyring (Electron `safeStorage`).
+- Connections are stored locally; database and SSH passwords and key passphrases are encrypted with your OS keyring (Electron `safeStorage`).
 - Drag & drop `.sql`, `.sql.gz` or `.csv` files anywhere on the window.
 
 ## Requirements
@@ -166,6 +178,7 @@ preload.js           The safe bridge the UI talks to (window.api)
 lib/restore.js       Dump inspection, streaming restore, SQL fixer, error hints
 lib/export.js        mysqldump-based export with progress
 lib/db.js            Connections, metadata, data browser queries
+lib/tunnel.js        SSH tunnels (incl. jump hosts) for every connection
 lib/query.js         SQL editor sessions, statement splitter, cancel
 lib/csv.js           CSV preview and import
 lib/tools.js         Finds mysql / mysqldump (incl. common Windows install paths)
@@ -176,8 +189,8 @@ No frontend framework or build step: the UI is plain HTML, CSS and JavaScript.
 
 ## Privacy & safety
 
-- Everything runs locally. Restora only talks to the database servers you add.
-- Passwords are encrypted with the OS keyring; restores pass credentials to `mysql` through a temporary `0600` options file that is deleted afterwards, never on the command line.
+- Everything runs locally. Restora only talks to the database and SSH servers you add (and GitHub, to check for updates).
+- Passwords (database and SSH) are encrypted with the OS keyring; restores pass credentials to `mysql` through a temporary `0600` options file that is deleted afterwards, never on the command line.
 - Destructive actions (drop & recreate, risky SQL, replacing files) always ask first.
 
 ## License
