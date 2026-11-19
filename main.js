@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Store } = require('./lib/store');
 const db = require('./lib/db');
-const { RestoreJob, inspectDump, mysqlClientInfo } = require('./lib/restore');
+const { RestoreJob, inspectDump, scanDumpTables, mysqlClientInfo } = require('./lib/restore');
 const csv = require('./lib/csv');
 const { ExportJob, dumpToolInfo } = require('./lib/export');
 const presets = require('./lib/presets');
@@ -123,6 +123,14 @@ app.whenReady().then(() => {
     return r.canceled ? null : r.filePaths[0];
   });
   handle('dump:inspect', (p) => inspectDump(p));
+  // One table scan at a time: picking another file cancels the previous scan.
+  let scan = null;
+  handle('dump:tables', async (p) => {
+    if (scan) scan.cancel();
+    const mine = (scan = scanDumpTables(p, (bytes, total) => send('dump:scan', { path: p, bytes, total })));
+    try { return await mine.promise; } finally { if (scan === mine) scan = null; }
+  });
+  handle('dump:tables-cancel', () => { if (scan) scan.cancel(); scan = null; });
   handle('csv:preview', (p, opts) => csv.preview(p, opts));
   handle('confirm', async ({ title, message, detail, ok }) => {
     if (process.env.RESTORA_AUTOCONFIRM && process.env.RESTORA_SHOT) return true; // automated UI tests only
@@ -135,7 +143,8 @@ app.whenReady().then(() => {
     const id = crypto.randomUUID();
     const emit = (type, data) => send('job:event', { id, type, data });
     await db.prepareDatabase(conn, opts.database, { create: opts.createDb, dropFirst: opts.dropFirst });
-    const job = new RestoreJob(id, { ...opts, conn }, emit);
+    const binlog = opts.skipBinlog ? await db.binlogProbe(conn).catch(() => null) : null;
+    const job = new RestoreJob(id, { ...opts, conn, binlog }, emit);
     jobs.set(id, job);
     job.run().then(async (result) => {
       jobs.delete(id);

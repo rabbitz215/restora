@@ -90,7 +90,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('restora.' + k, JSON.stringify(v)); } catch {} },
 };
 
-const DEFAULT_OPTS = { stripDefiner: true, skipRoutines: false, skipUseCreateDb: true, fixMariaSandbox: true, fixCollation: false, disableFk: true, fastMode: true, force: false };
+const DEFAULT_OPTS = { stripDefiner: true, skipRoutines: false, skipUseCreateDb: true, fixMariaSandbox: true, fixCollation: false, disableFk: true, fastMode: true, skipBinlog: true, force: false };
 const OPT_DEFS = [
   { group: 'Compatibility fixes', icon: 'wand', items: [
     ['stripDefiner', 'Strip DEFINER clauses', 'Views, triggers and routines get owned by your user. Prevents "Access denied; you need SUPER privilege".', 'hasDefiner'],
@@ -102,15 +102,16 @@ const OPT_DEFS = [
   { group: 'Performance & safety', icon: 'zap', items: [
     ['disableFk', 'Disable foreign key checks', 'Load tables in any order without constraint failures.', null],
     ['fastMode', 'Fast mode', 'Turns off autocommit and commits once at the end. Much faster on InnoDB.', null],
+    ['skipBinlog', 'Skip binary log', 'Doesn\'t write the restore to the binary log, so rows hit the disk once, not twice. Replicas won\'t receive it. Needs SESSION_VARIABLES_ADMIN; skipped if not allowed.', null],
     ['force', 'Continue on errors', 'Keep going past failed statements and collect every error.', null],
   ] },
 ];
 
 const S = {
   view: 'home', conns: [], env: null, history: [],
-  r: { file: null, info: null, inspecting: false, connId: store.get('r.connId', null), server: null, dbs: null, dbMode: 'existing', db: null, newDb: '', dbFilter: '', dropFirst: false, opts: { ...DEFAULT_OPTS, ...store.get('r.opts', {}) } },
+  r: { file: null, info: null, inspecting: false, connId: store.get('r.connId', null), server: null, dbs: null, dbMode: 'existing', db: null, newDb: '', dbFilter: '', dropFirst: false, tables: null, scanPct: 0, tblFilter: '', noData: new Set(store.get('r.noData', [])), opts: { ...DEFAULT_OPTS, ...store.get('r.opts', {}) } },
   c: { file: null, preview: null, delimiter: null, header: true, connId: store.get('c.connId', null), dbs: null, db: null, tables: null, tableMode: 'new', table: '', newTable: '', mapping: [], opts: { mode: 'insert', emptyAsNull: true, truncate: false, force: false } },
-  e: { connId: store.get('e.connId', null), server: null, dbs: null, db: null, dbFilter: '', objects: null, allTables: true, selected: new Set(), tFilter: '', file: null, opts: { gzip: true, content: 'both', routines: true, triggers: true, events: false, addDrop: true, createDb: false, ...store.get('e.opts', {}) } },
+  e: { connId: store.get('e.connId', null), server: null, dbs: null, db: null, dbFilter: '', objects: null, allTables: true, selected: new Set(), noData: new Set(), tFilter: '', file: null, opts: { gzip: true, content: 'both', routines: true, triggers: true, events: false, addDrop: true, createDb: false, ...store.get('e.opts', {}) } },
   dv: null, tabs: [],
   tree: {},
   job: null, histOpen: null,
@@ -389,12 +390,67 @@ function renderRestore() {
     <div class="grid-2">
       <div class="stack">
         <div class="card" id="r-source"></div>
+        <div class="card" id="r-tables" hidden></div>
         <div class="card" id="r-target"></div>
       </div>
       <div class="sticky"><div class="card" id="r-options"></div></div>
     </div>`;
-  renderSource(); renderTarget(); renderOptions();
+  renderSource(); renderRestoreTables(); renderTarget(); renderOptions();
 }
+
+// Tables found in the dump whose rows will be left out (structure only).
+// The choice is remembered by table name, so it carries over to the next dump of the same database.
+function restoreNoData() {
+  const r = S.r;
+  if (!Array.isArray(r.tables)) return [];
+  return r.tables.filter((t) => t.dataBytes && r.noData.has(t.name));
+}
+
+function renderRestoreTables() {
+  const el = $('#r-tables'); if (!el) return;
+  const r = S.r;
+  el.hidden = !r.info;
+  if (!r.info) return;
+  let body, right = '';
+  if (r.tables === null) body = `<div class="db-empty" style="padding:8px 0">Reading tables…</div>`;
+  else if (r.tables.scanning) body = `<div class="scan-bar"><span id="r-scanbar" style="width:${r.scanPct}%"></span></div><small class="muted" style="display:block;margin-top:8px">Reading tables in the dump… <span id="r-scanpct">${r.scanPct}%</span></small>`;
+  else if (r.tables.error) body = `<div class="callout danger">${ic('alert')}<div>Could not read the tables: ${esc(r.tables.error)}</div></div>`;
+  else if (!r.tables.length) body = `<div class="callout info">${ic('info')}<div>No CREATE TABLE or INSERT statements found in this dump.</div></div>`;
+  else {
+    const total = r.tables.reduce((s, t) => s + t.dataBytes, 0);
+    const off = restoreNoData(), offBytes = off.reduce((s, t) => s + t.dataBytes, 0);
+    right = `<span class="chip">${plural(r.tables.length, 'table')} · ${fmtBytes(total)} of rows</span>`;
+    const f = r.tblFilter.toLowerCase();
+    const list = r.tables.filter((t) => t.name.toLowerCase().includes(f)).sort((a, b) => b.dataBytes - a.dataBytes || a.name.localeCompare(b.name));
+    body = `<div style="display:flex;gap:8px;align-items:center">
+        <div class="input-icon" style="flex:1">${ic('search')}<input class="input" placeholder="Filter tables…" value="${esc(r.tblFilter)}" data-input="r-tblfilter" spellcheck="false"></div>
+        <button class="btn sm ghost" data-act="r-data-all" data-on="1">All data</button><button class="btn sm ghost" data-act="r-data-all" data-on="0">No data</button></div>
+      <small class="muted" style="display:block;margin-top:8px">Every table is created. Switch a table to <b>No data</b> to skip its rows.${off.length ? ` Skipping <b>${fmtBytes(offBytes)}</b> in ${plural(off.length, 'table')}.` : ''}</small>
+      <div class="db-list tbl-list" id="r-tlist">${list.map((t) => {
+        const data = !r.noData.has(t.name);
+        const tog = t.dataBytes ? `<button class="data-tog ${data ? 'on' : ''}" data-act="r-tdata" data-name="${esc(t.name)}" title="${data ? 'Rows will be restored. Click for structure only.' : 'Structure only. Click to restore rows too.'}">${data ? 'Data' : 'No data'}</button>` : '';
+        return `<div class="db-row ${t.dataBytes && !data ? 'no-data' : ''}"><label>${ic('table')}<b>${esc(t.name)}</b><small>${t.dataBytes ? fmtBytes(t.dataBytes) : 'no rows'}</small></label>${tog}</div>`;
+      }).join('') || '<div class="db-empty">No match</div>'}</div>`;
+  }
+  el.innerHTML = `<div class="card-head"><span class="step">${ic('table')}</span><h3>Tables</h3><div class="right">${right}</div></div><div class="card-body">${body}</div>`;
+}
+
+async function scanRestoreTables(path) {
+  const r = S.r;
+  r.tables = { scanning: true }; r.scanPct = 0; renderRestoreTables();
+  let res;
+  try { res = await api.dumpTables(path); } catch (e) { res = /cancelled/.test(e.message) ? null : { error: e.message }; }
+  if (r.file !== path || !res) return;
+  r.tables = res;
+  renderRestoreTables(); renderOptions();
+}
+api.onDumpScan((m) => {
+  if (m.path !== S.r.file || !S.r.tables?.scanning) return;
+  S.r.scanPct = Math.min(100, Math.round((m.bytes / (m.total || 1)) * 100));
+  const b = $('#r-scanbar'), p = $('#r-scanpct');
+  if (b) b.style.width = S.r.scanPct + '%';
+  if (p) p.textContent = S.r.scanPct + '%';
+});
 
 function renderSource() {
   if (!$('#r-source')) return;
@@ -500,6 +556,7 @@ function renderOptions() {
       <div class="summary">
         <div class="line"><span>From</span><b class="${r.info ? '' : 'muted'}">${r.info ? esc(r.info.name) : 'No file selected'}</b></div>
         <div class="line"><span>Into</span>${conn ? `<span class="dot" style="color:${esc(conn.color)};width:8px;height:8px"></span><b>${esc(conn.name)}</b>` : '<b class="muted">No server</b>'}${name ? `<b class="mono" style="color:var(--accent)">/ ${esc(name)}</b>` : ''}</div>
+        ${restoreNoData().length ? `<div class="line"><span>No data</span><b>${plural(restoreNoData().length, 'table')}</b><b class="muted" style="font-weight:400">· ${fmtBytes(restoreNoData().reduce((s, t) => s + t.dataBytes, 0))}</b></div>` : ''}
         ${r.dropFirst && r.dbMode === 'existing' && r.db ? `<div class="line" style="color:var(--danger)">${ic('alert')}<b>Existing data will be dropped first</b></div>` : ''}
       </div>
       ${groups}
@@ -511,7 +568,7 @@ async function loadDump(path) {
   S.r.inspecting = true; renderSource();
   try {
     const info = await api.inspectDump(path);
-    S.r.info = info; S.r.file = path;
+    S.r.info = info; S.r.file = path; S.r.tblFilter = '';
     if (info.hasMariaSandbox) S.r.opts.fixMariaSandbox = true;
     if (info.hasUseOrCreateDb) S.r.opts.skipUseCreateDb = true;
     if (info.hasDefiner) S.r.opts.stripDefiner = true;
@@ -520,6 +577,7 @@ async function loadDump(path) {
   } catch (e) { toast('Could not read file: ' + e.message); }
   S.r.inspecting = false;
   renderSource(); renderOptions();
+  if (S.r.file === path && S.r.info) scanRestoreTables(path); else renderRestoreTables();
 }
 
 async function selectRestoreConn(id, preferDb = null) {
@@ -546,7 +604,7 @@ async function startRestore() {
     if (!ok) return;
   }
   store.set('r.opts', r.opts);
-  const payload = { file: r.file, connId: r.connId, database, createDb: r.dbMode === 'new', dropFirst: r.dbMode === 'existing' && r.dropFirst, ...r.opts };
+  const payload = { file: r.file, connId: r.connId, database, createDb: r.dbMode === 'new', dropFirst: r.dbMode === 'existing' && r.dropFirst, ...r.opts, noData: restoreNoData().map((t) => t.name) };
   await guard(async () => {
     const { id } = await api.startRestore(payload);
     S.job = { id, kind: 'restore', status: 'running', title: r.info.name, file: r.file, conn, database, progress: { bytes: 0, total: r.info.size }, logs: [], errors: [], payload, startedAt: Date.now() };
@@ -799,7 +857,17 @@ function exportFile() {
 function exportTables() {
   const e = S.e;
   if (!Array.isArray(e.objects)) return [];
-  return e.allTables ? e.objects : e.objects.filter((o) => e.selected.has(o.name));
+  if (e.allTables) return e.objects;
+  // Data-only dumps skip tables whose data was switched off: there would be nothing left of them.
+  return e.objects.filter((o) => e.selected.has(o.name) && !(e.opts.content === 'data' && hasData(o) && e.noData.has(o.name)));
+}
+// Views carry no rows, so the per-table data toggle only applies to base tables.
+const hasData = (o) => !o.view;
+// Tables dumped with structure only (per-table data toggle, Choose tables mode only).
+function exportNoData() {
+  const e = S.e;
+  if (e.allTables || e.opts.content !== 'both') return [];
+  return exportTables().filter((o) => hasData(o) && e.noData.has(o.name)).map((o) => o.name);
 }
 
 function renderExport() {
@@ -846,12 +914,17 @@ function renderExportTables() {
   } else {
     const f = e.tFilter.toLowerCase();
     const list = e.objects.filter((o) => o.name.toLowerCase().includes(f));
+    const dataToggles = e.opts.content !== 'schema';
     body = `<div style="display:flex;gap:8px;align-items:center">
         <div class="input-icon" style="flex:1">${ic('search')}<input class="input" placeholder="Filter tables…" value="${esc(e.tFilter)}" data-input="e-tfilter" spellcheck="false"></div>
         <button class="btn sm ghost" data-act="e-sel-all">Select all</button><button class="btn sm ghost" data-act="e-sel-none">None</button></div>
-      <div class="db-list tbl-list" id="e-tlist">${list.map((o) => `
-        <label class="db-row"><input type="checkbox" class="check" data-change="e-tbl" data-name="${esc(o.name)}" ${e.selected.has(o.name) ? 'checked' : ''}>
-          ${ic(o.view ? 'eye' : 'table')}<b>${esc(o.name)}</b><small>${o.view ? 'view' : `~${fmtCompact(o.rows)} rows · ${fmtBytes(o.size)}`}</small></label>`).join('') || '<div class="db-empty">No match</div>'}</div>`;
+      ${dataToggles ? `<div class="tbl-data-head"><small class="muted">Data column: include rows, or dump the structure only.</small><span><button class="btn sm ghost" data-act="e-data-all" data-on="1">All data</button><button class="btn sm ghost" data-act="e-data-all" data-on="0">No data</button></span></div>` : ''}
+      <div class="db-list tbl-list" id="e-tlist">${list.map((o) => {
+        const sel = e.selected.has(o.name), data = !e.noData.has(o.name);
+        const tog = dataToggles && hasData(o) ? `<button class="data-tog ${data ? 'on' : ''}" data-act="e-tdata" data-name="${esc(o.name)}" ${sel ? '' : 'disabled'} title="${data ? 'Rows included. Click for structure only.' : 'Structure only. Click to include rows.'}">${data ? 'Data' : 'No data'}</button>` : '';
+        return `<div class="db-row ${sel && !data && dataToggles && hasData(o) ? 'no-data' : ''}"><label><input type="checkbox" class="check" data-change="e-tbl" data-name="${esc(o.name)}" ${sel ? 'checked' : ''}>
+          ${ic(o.view ? 'eye' : 'table')}<b>${esc(o.name)}</b><small>${o.view ? 'view' : `~${fmtCompact(o.rows)} rows · ${fmtBytes(o.size)}`}</small></label>${tog}</div>`;
+      }).join('') || '<div class="db-empty">No match</div>'}</div>`;
   }
   const n = exportTables().length;
   $('#e-tables').innerHTML = `<div class="card-head"><span class="step ${e.db && Array.isArray(e.objects) && (e.allTables || n) ? 'done' : ''}">${e.db && Array.isArray(e.objects) && (e.allTables || n) ? ic('check') : '2'}</span><h3>Tables</h3>
@@ -866,7 +939,8 @@ function renderExportOptions() {
   const conn = connById(e.connId);
   const file = exportFile();
   const tables = exportTables();
-  const est = tables.reduce((s, t) => s + (t.data || 0), 0);
+  const noData = new Set(exportNoData());
+  const est = o.content === 'schema' ? 0 : tables.reduce((s, t) => s + (noData.has(t.name) ? 0 : t.data || 0), 0);
   const ready = conn && e.db && Array.isArray(e.objects) && (e.allTables || tables.length) && S.env?.dump?.found;
   const opt = (k, t, d, disabled) => `<label class="opt ${disabled ? 'off' : ''}"><div class="txt"><b>${t}</b><small>${d}</small></div>${sw(`data-change="e-opt" data-key="${k}" ${disabled ? 'disabled' : ''}`, o[k] && !disabled)}</label>`;
   const schemaOnlyOff = o.content === 'data';
@@ -876,6 +950,7 @@ function renderExportOptions() {
       <div class="summary">
         <div class="line"><span>From</span>${conn ? `<span class="dot" style="color:${esc(conn.color)};width:8px;height:8px"></span><b>${esc(conn.name)}</b>` : '<b class="muted">No server</b>'}${e.db ? `<b class="mono" style="color:var(--accent)">/ ${esc(e.db)}</b>` : ''}</div>
         <div class="line"><span>Tables</span><b class="${tables.length ? '' : 'muted'}">${Array.isArray(e.objects) ? (e.allTables ? `All (${e.objects.length})` : `${tables.length} selected`) : '—'}</b>${est ? `<b class="muted" style="font-weight:400">· ~${fmtBytes(est)} of data</b>` : ''}</div>
+        ${noData.size ? `<div class="line"><span>Structure only</span><b>${plural(noData.size, 'table')}</b></div>` : ''}
       </div>
       <div class="opt-group-label">${ic('file')}Format</div>
       <div class="fmt-pick">
@@ -911,7 +986,7 @@ async function selectExportConn(id, preferDb = null) {
 }
 async function selectExportDb(name) {
   const e = S.e;
-  e.db = name; e.objects = null; e.selected = new Set(); e.tFilter = '';
+  e.db = name; e.objects = null; e.selected = new Set(); e.noData = new Set(); e.tFilter = '';
   renderExportSource(); renderExportTables(); renderExportOptions();
   try { e.objects = await api.objects(e.connId, name); } catch (err) { e.objects = { error: err.message }; }
   if (e.db !== name) return;
@@ -929,8 +1004,9 @@ async function startExport() {
   }
   store.set('e.opts', o);
   const conn = connById(e.connId);
-  const weights = Object.fromEntries(tables.map((t) => [t.name, t.data]));
-  const payload = { connId: e.connId, database: e.db, tables: tables.map((t) => t.name), allTables: e.allTables, weights, file, ...o, createDb: o.createDb && e.allTables };
+  const noData = exportNoData();
+  const weights = Object.fromEntries(tables.map((t) => [t.name, noData.includes(t.name) ? 0 : t.data]));
+  const payload = { connId: e.connId, database: e.db, tables: tables.map((t) => t.name), noData, allTables: e.allTables, weights, file, ...o, createDb: o.createDb && e.allTables };
   await guard(async () => {
     const { id } = await api.startExport(payload);
     S.job = { id, kind: 'export', status: 'running', title: file.split(/[\\/]/).pop(), file, conn, database: e.db, progress: { bytes: 0, total: 1, written: 0 }, logs: [], errors: [], payload, startedAt: Date.now() };
@@ -2625,7 +2701,9 @@ const actions = {
   'add-conn': () => openConn(null),
   'edit-conn': (el) => openConn(el.dataset.id),
   'pick-dump': async () => { const p = await guard(() => api.pickFile('dump')); if (p) loadDump(p); },
-  'clear-dump': () => { Object.assign(S.r, { file: null, info: null }); renderSource(); renderOptions(); },
+  'clear-dump': () => { Object.assign(S.r, { file: null, info: null, tables: null }); api.cancelDumpTables().catch(() => {}); renderSource(); renderRestoreTables(); renderOptions(); },
+  'r-tdata': (el) => { const n = el.dataset.name, s = S.r.noData; if (s.has(n)) s.delete(n); else s.add(n); store.set('r.noData', [...s]); renderRestoreTables(); renderOptions(); },
+  'r-data-all': (el) => { const f = S.r.tblFilter.toLowerCase(); (Array.isArray(S.r.tables) ? S.r.tables : []).filter((t) => t.dataBytes && t.name.toLowerCase().includes(f)).forEach((t) => (el.dataset.on === '1' ? S.r.noData.delete(t.name) : S.r.noData.add(t.name))); store.set('r.noData', [...S.r.noData]); renderRestoreTables(); renderOptions(); },
   'pick-csv': async () => { const p = await guard(() => api.pickFile('csv')); if (p) loadCsv(p); },
   'clear-csv': () => { Object.assign(S.c, { file: null, preview: null, mapping: [] }); renderCsv(); },
   'r-dbmode': (el) => { S.r.dbMode = el.dataset.mode; renderTarget(); renderOptions(); },
@@ -2673,6 +2751,8 @@ const actions = {
   'e-refresh': () => S.e.connId && selectExportConn(S.e.connId, S.e.db),
   'e-tmode': (el) => { S.e.allTables = el.dataset.mode === 'all'; renderExportTables(); renderExportOptions(); },
   'e-sel-all': () => { const f = S.e.tFilter.toLowerCase(); (S.e.objects || []).filter((o) => o.name.toLowerCase().includes(f)).forEach((o) => S.e.selected.add(o.name)); renderExportTables(); renderExportOptions(); },
+  'e-tdata': (el) => { const n = el.dataset.name, s = S.e.noData; if (s.has(n)) s.delete(n); else s.add(n); renderExportTables(); renderExportOptions(); },
+  'e-data-all': (el) => { const f = S.e.tFilter.toLowerCase(); (S.e.objects || []).filter((o) => hasData(o) && o.name.toLowerCase().includes(f)).forEach((o) => (el.dataset.on === '1' ? S.e.noData.delete(o.name) : S.e.noData.add(o.name))); renderExportTables(); renderExportOptions(); },
   'e-sel-none': () => { const f = S.e.tFilter.toLowerCase(); (S.e.objects || []).filter((o) => o.name.toLowerCase().includes(f)).forEach((o) => S.e.selected.delete(o.name)); renderExportTables(); renderExportOptions(); },
   'e-fmt': (el) => { S.e.opts.gzip = el.dataset.gz === '1'; store.set('e.opts', S.e.opts); renderExportOptions(); },
   'e-saveas': async () => { const p = await guard(() => api.saveFile({ defaultPath: exportFile(), gzip: S.e.opts.gzip })); if (p) { S.e.file = p; if (/\.sql$/i.test(p)) S.e.opts.gzip = false; else if (/\.gz$/i.test(p)) S.e.opts.gzip = true; renderExportOptions(); } },
@@ -2844,8 +2924,8 @@ const changes = {
   'a-archive': (el) => { S.a.archive = el.checked; renderQuick(); },
   'e-conn': (el) => selectExportConn(el.value),
   'e-opt': (el) => { S.e.opts[el.dataset.key] = el.checked; store.set('e.opts', S.e.opts); },
-  'e-content': (el) => { S.e.opts.content = el.value; store.set('e.opts', S.e.opts); renderExportOptions(); },
-  'e-tbl': (el) => { if (el.checked) S.e.selected.add(el.dataset.name); else S.e.selected.delete(el.dataset.name); const n = $('#e-selcount'); if (n) n.textContent = `${exportTables().length} of ${S.e.objects.length} selected`; renderExportOptions(); },
+  'e-content': (el) => { S.e.opts.content = el.value; store.set('e.opts', S.e.opts); renderExportTables(); renderExportOptions(); },
+  'e-tbl': (el) => { if (el.checked) S.e.selected.add(el.dataset.name); else S.e.selected.delete(el.dataset.name); const n = $('#e-selcount'); if (n) n.textContent = `${exportTables().length} of ${S.e.objects.length} selected`; const row = el.closest('.db-row'), tog = row?.querySelector('.data-tog'); if (tog) { tog.disabled = !el.checked; row.classList.toggle('no-data', el.checked && !tog.classList.contains('on')); } renderExportOptions(); },
   'q-db': (el) => { S.dv.db = el.value || null; saveTabs(); renderTabs(); },
   'q-coe': (el) => { S.dv.coe = el.checked; },
   'upd-auto': (el) => { U.auto = el.checked; store.set('update.auto', el.checked); if (el.checked && U.state === 'idle') checkUpdates(false); },
@@ -2876,6 +2956,7 @@ const changes = {
 };
 const inputs = {
   'r-dbfilter': (el) => { S.r.dbFilter = el.value; renderDbList(); },
+  'r-tblfilter': (el) => { S.r.tblFilter = el.value; const pos = el.selectionStart; renderRestoreTables(); const i = $('[data-input="r-tblfilter"]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } },
   'scp-name': (el) => { S.scp.name = el.value.trim(); const d = patternDate(S.scp.pattern, S.scp.name); if (d) { S.scp.date = d; const i = $('[data-change="scp-date"]'); if (i) i.value = d; } renderScpCmd(); renderScpRemote(); renderScpStatus(); },
   'a-q': (el) => { S.a.q = el.value; const pos = el.selectionStart; renderQuick(); const i = $('[data-input="a-q"]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } },
   'e-dbfilter': (el) => { S.e.dbFilter = el.value; renderDbList('e'); },

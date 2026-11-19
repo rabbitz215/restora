@@ -64,12 +64,13 @@ and the `.deb` (which asks for your password to install). You can turn automatic
   - remove the MariaDB `/*M!999999` sandbox header
   - convert MySQL 8 `utf8mb4_0900_*` collations for MariaDB / MySQL 5.7
   - skip triggers & routines (error 1419 when binary logging is on)
-- Fast mode (single commit), foreign-key checks off, continue-on-error.
+- Lists every table in the dump with the size of its rows, biggest first, and lets you restore any table **without its data** (structure only). Handy for huge log or history tables; the choice is remembered by table name.
+- Fast mode (single commit), foreign-key checks off, skip the binary log (when your user may), continue-on-error.
 - Errors show the MySQL code, line number and a hint for how to fix them; **Adjust options & retry** takes you straight back.
 - Restore into an existing database (optionally drop & recreate it first) or a new one.
 
 ### Export
-- Whole database or selected tables, to **`.sql`** or gzip-compressed **`.sql.gz`**.
+- Whole database or selected tables, to **`.sql`** or gzip-compressed **`.sql.gz`**. When choosing tables, each one can be exported with or without its data.
 - Structure + data, structure only, or data only; routines, triggers, events, `DROP TABLE`, `CREATE DATABASE` toggles.
 - Uses `mysqldump --single-transaction`, so exports don't lock InnoDB tables.
 - Written to a `.part` file and only renamed when complete, so a failed export never leaves a broken file behind.

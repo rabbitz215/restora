@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.9 — 2026-11-19
+- Restore: after you pick a dump, Restora lists every table in it with the size of its rows, biggest first
+- Restore: switch any table to "No data" to create it without its rows, so a huge log or history table no longer slows the restore down. Your choice is remembered by table name for the next restore
+- Restore: much faster on dumps with very long INSERT lines; reading a large .sql.gz is no longer the bottleneck
+- Restore: new "Skip binary log" option (on by default) so rows are written to disk once instead of twice, when your MySQL user is allowed to
+- Export: when choosing tables, each table now has a Data / No data switch to export it with or without its rows, plus All data / No data buttons
+
 ## 1.0.8 — 2026-11-18
 - Connect through an SSH tunnel: a new SSH Tunnel tab in the connection dialog, with password, key file (with passphrase) or SSH agent login, and an optional bastion / jump host
 - Browsing, the SQL editor, restores, exports and CSV imports all work over the tunnel; Test connection says when it went through SSH
