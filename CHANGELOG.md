@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.10 — 2026-11-21
+- Your open table and SQL tabs are restored when you reopen Restora. If you closed it in Data & SQL, it opens straight back there on the tab you had active
+- SQL typed just before closing the window is no longer lost
+- JSON columns open in a dedicated editor: double-click a JSON cell (or press Enter or F2 on it) to edit it in a large modal, with live validation that flags invalid JSON before you apply it
+- Pretty print switch in the JSON editor to toggle between indented and compact JSON; your choice is remembered
+- The JSON editor also works with MariaDB JSON columns (stored as longtext) when the value is a JSON object or array
+- Ctrl+Enter applies the JSON edit, Tab indents, and "Set NULL" clears nullable columns. Reformatting alone doesn't count as a change
+
 ## 1.0.9 — 2026-11-19
 - Restore: after you pick a dump, Restora lists every table in it with the size of its rows, biggest first
 - Restore: switch any table to "No data" to create it without its rows, so a huge log or history table no longer slows the restore down. Your choice is remembered by table name for the next restore

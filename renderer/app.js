@@ -230,6 +230,7 @@ function go(view) {
   if (view.startsWith('quick:')) { const id = view.slice(6); if (presetById(id)) { S.a = QS(id); view = 'quick'; } else view = 'restore'; }
   if (S.view === 'data' && view !== 'data') rememberScroll();
   S.view = view;
+  store.set('view', view);
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + view));
   renderNav();
   if (view === 'home') renderHome();
@@ -1027,6 +1028,8 @@ S.dv = EMPTY_DV;
 const saveTabs = () => store.set('tabs', { list: S.tabs.map(({ kind, key, title, sql, connId, db, table }) => (kind === 'query' ? { kind, key, title, sql, connId, db } : { connId, db, table })), active: S.dv.key });
 let saveTabsTimer = null;
 const saveTabsSoon = () => { clearTimeout(saveTabsTimer); saveTabsTimer = setTimeout(saveTabs, 400); };
+// Flush pending SQL edits when the window closes, so the last keystrokes aren't lost.
+window.addEventListener('beforeunload', () => { clearTimeout(saveTabsTimer); saveTabs(); });
 const sameGroup = (a, b) => a.connId === b.connId && a.db === b.db;
 
 function rememberScroll() {
@@ -1536,6 +1539,7 @@ function startEdit(d, initial) {
   if (isDeleted(d, r)) return toast('This row is marked for deletion. Revert it first (Ctrl+U).');
   const cur = cellAt(d, r, ci);
   if (cur && typeof cur === 'object') return toast('Binary and very long values can only be changed with SQL');
+  if (initial == null && isJsonCell(d.data.columns[ci], cur)) return openJsonEdit(d, r, ci, cur);
   if (!$(`#dv-tbody td[data-r="${r}"][data-c="${ci}"]`)) scrollToSel(d);
   const td = $(`#dv-tbody td[data-r="${r}"][data-c="${ci}"]`); if (!td) return;
   closeEditor(false);
@@ -1572,6 +1576,70 @@ function closeEditor(commit) {
   if (orig !== UNSET && ((orig === null && v === null) || (orig !== null && v !== null && String(orig) === v))) return;
   setCells(d, [{ r, ci }], v);
   $('#dv-grid')?.focus();
+}
+/* ---- JSON cell editor (modal) ---- */
+// JSON columns, plus MariaDB's JSON alias (longtext) when the value parses as an object/array.
+const parseJson = (s) => { try { return { ok: true, v: JSON.parse(s) }; } catch (err) { return { ok: false, err }; } };
+function isJsonCell(col, v) {
+  if (col.dataType === 'json') return true;
+  if (!/text$/.test(col.dataType) || typeof v !== 'string' || !/^\s*[\[{]/.test(v)) return false;
+  return parseJson(v).ok;
+}
+let jsonEd = null;
+const fmtJson = (s, pretty) => { const p = parseJson(s); return p.ok ? JSON.stringify(p.v, null, pretty ? 2 : 0) : s; };
+function openJsonEdit(d, r, ci, cur) {
+  const col = d.data.columns[ci], pretty = store.get('json.pretty', true);
+  const raw = cur === null || cur === UNSET ? '' : String(cur);
+  jsonEd = { d, r, ci, orig: cur };
+  const el = $('#jsonDialog');
+  el.innerHTML = `<div class="modal val-modal json-modal">
+    <div class="modal-head"><div><h3 class="mono">${esc(col.name)}</h3><p>${esc(col.type || col.dataType)} · row ${fmtNum(d.data.offset + r + 1)}${cur === null ? ' · currently NULL' : ''}</p></div>
+      <button class="icon-btn" data-act="json-close">${ic('x')}</button></div>
+    <div class="modal-body">
+      <label class="check-inline json-pretty">${sw('data-change="json-pretty"', pretty)}Pretty print</label>
+      <textarea class="input mono val-text json-text" spellcheck="false">${esc(fmtJson(raw, pretty))}</textarea>
+      <div class="json-err"></div>
+    </div>
+    <div class="modal-foot">${col.nullable ? `<button class="btn ghost" data-act="json-null">Set NULL</button>` : ''}<span class="muted" style="font-size:12px">Ctrl+Enter to apply</span><div class="spacer"></div><button class="btn" data-act="json-close">Cancel</button><button class="btn primary" data-act="json-apply">${ic('check')}Apply</button></div></div>`;
+  el.showModal();
+  const ta = el.querySelector('.json-text');
+  ta.focus(); ta.setSelectionRange(0, 0); ta.scrollTop = 0;
+  ta.addEventListener('input', () => jsonValidate());
+  ta.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); jsonApply(); }
+    else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end'); }
+  });
+  jsonValidate();
+}
+function jsonValidate() {
+  const ta = $('#jsonDialog .json-text'), out = $('#jsonDialog .json-err'); if (!ta) return true;
+  const s = ta.value.trim(), p = s ? parseJson(s) : { ok: true };
+  out.textContent = p.ok ? '' : 'Invalid JSON: ' + p.err.message;
+  ta.classList.toggle('invalid', !p.ok);
+  return p.ok;
+}
+function jsonPretty(on) {
+  store.set('json.pretty', on);
+  const ta = $('#jsonDialog .json-text'); if (!ta) return;
+  if (!jsonValidate()) return toast('Fix the JSON first to reformat it');
+  ta.value = fmtJson(ta.value, on);
+}
+function jsonClose() { jsonEd = null; $('#jsonDialog').close(); $('#dv-grid')?.focus(); }
+function jsonApply(setNull = false) {
+  const ed = jsonEd; if (!ed) return;
+  const { d, r, ci, orig } = ed, col = d.data.columns[ci];
+  let v = setNull ? null : $('#jsonDialog .json-text').value.trim();
+  if (v === '') v = col.nullable ? null : (toast('This column cannot be NULL'), undefined);
+  if (v === undefined) return;
+  if (v !== null) {
+    if (!jsonValidate()) return toast('Invalid JSON. Fix it before applying.');
+    // Same data as before (only formatting changed): keep the stored value as-is.
+    if (typeof orig === 'string' && fmtJson(orig, false) === fmtJson(v, false)) return jsonClose();
+    v = fmtJson(v, false);
+  }
+  if (orig !== UNSET && orig === null && v === null) return jsonClose();
+  jsonClose();
+  setCells(d, [{ r, ci }], v);
 }
 function moveSel(d, dr, dp, extend = false) {
   if (!d.data) return;
@@ -2862,6 +2930,9 @@ const actions = {
   'tree-tfilter-clear': (el, ev) => { ev.stopPropagation(); T(el.dataset.id).tFilter[el.dataset.db] = ''; renderConns(); },
   'dv-copysql': () => { if (S.dv.data) { navigator.clipboard.writeText(S.dv.data.sql); toast('SQL copied', 'ok'); } },
   'val-close': () => $('#valDialog').close(),
+  'json-close': () => jsonClose(),
+  'json-apply': () => jsonApply(),
+  'json-null': () => jsonApply(true),
   'show-file': () => S.job && api.showInFolder(S.job.file),
   'copy-log': () => { navigator.clipboard.writeText(S.job.logs.map((l) => `[${clock(l.t)}] ${l.level.toUpperCase()} ${l.message}`).join('\n')); toast('Log copied', 'ok'); },
   'c-tmode': (el) => { S.c.tableMode = el.dataset.mode; if (S.c.tableMode === 'new') S.c.mapping.forEach((m, i) => { m.column = S.c.preview.columns[i].name; }); else automap(); renderCsvMap(); renderCsvTarget(); },
@@ -2912,6 +2983,7 @@ const actions = {
 };
 
 const changes = {
+  'json-pretty': (el) => jsonPretty(el.checked),
   'dlg-ssh-on': (el) => { dlg.ssh.enabled = el.checked; renderDlg(); },
   'dlg-ssh-auth': (el) => { dlg.ssh.auth = el.value; renderDlg(); },
   'r-conn': (el) => selectRestoreConn(el.value),
@@ -3123,6 +3195,7 @@ $('#updDialog').addEventListener('click', (e) => { if (e.target.id === 'updDialo
 $('#themeDialog').addEventListener('click', (e) => { if (e.target.id === 'themeDialog') e.target.close(); });
 $('#scpDialog').addEventListener('click', (e) => { if (e.target.id === 'scpDialog') e.target.close(); });
 $('#valDialog').addEventListener('click', (e) => { if (e.target.id === 'valDialog') e.target.close(); });
+$('#jsonDialog').addEventListener('close', () => { jsonEd = null; });
 $('#connDialog').addEventListener('click', (e) => { if (e.target.id === 'connDialog') e.target.close(); });
 
 // Drag & drop anywhere on the restore / CSV views.
@@ -3153,14 +3226,16 @@ document.addEventListener('drop', (e) => {
   $('#themeBtn').innerHTML = ic('palette');
   initUpdates();
   setTimeout(() => showWhatsNew(false), 600);
-  renderEnv(); renderConns(); go('home');
-  for (const id of openIds) if (connById(id)) loadTreeDbs(id);
-  if (S.e.connId) selectExportConn(S.e.connId);
+  // Reopen the tabs from last time before the first render, so Home and the tree see them.
   const savedTabs = store.get('tabs', null);
   if (savedTabs?.list?.length) {
-    S.tabs = savedTabs.list.filter((t) => connById(t.connId)).map((t) => (t.kind === 'query' ? newQuery(t.connId, t.db, t.sql || '', t.title, t.key) : newDv(t.connId, t.db, t.table)));
+    for (const t of savedTabs.list) if (connById(t.connId)) S.tabs.push(t.kind === 'query' ? newQuery(t.connId, t.db, t.sql || '', t.title, t.key) : newDv(t.connId, t.db, t.table));
     S.dv = S.tabs.find((t) => t.key === savedTabs.active) || S.tabs[0] || EMPTY_DV;
   }
+  // Land back in Data & SQL if that's where the app was closed and there are tabs to show.
+  renderEnv(); renderConns(); go(store.get('view') === 'data' && S.tabs.length ? 'data' : 'home');
+  for (const id of openIds) if (connById(id)) loadTreeDbs(id);
+  if (S.e.connId) selectExportConn(S.e.connId);
   if (S.r.connId) selectRestoreConn(S.r.connId);
   if (S.c.connId) selectCsvConn(S.c.connId);
 })();
