@@ -14,6 +14,7 @@ const ICONS = {
   alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+  eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
   trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
@@ -238,7 +239,7 @@ function go(view) {
   if (view === 'quick') { renderQuick(); loadQuick(); }
   if (view === 'export') renderExport();
   if (view === 'csv') renderCsv();
-  if (view === 'data') { renderData(); if (S.dv.table && !S.dv.data && !S.dv.loading) fetchData(S.dv); }
+  if (view === 'data') { renderData(); if (S.dv.table && !S.dv.data && !S.dv.loading) lastFetch = fetchData(S.dv); }
   if (view === 'history') loadHistory();
   if (view === 'job') renderJob();
   $('#main').classList.toggle('flush', view === 'data');
@@ -1672,6 +1673,43 @@ function gridMenu(x, y) {
   m.style.left = Math.min(x, innerWidth - w - 8) + 'px';
   m.style.top = Math.min(y, innerHeight - h - 8) + 'px';
 }
+/* ---- database right-click menu (sidebar tree) ---- */
+function dbMenu(x, y, id, db) {
+  const at = `data-id="${esc(id)}" data-db="${esc(db)}"`;
+  const item = (act, icon, label, cls = '') => `<button class="cm-item ${cls}" data-act="${act}" ${at}><span>${ic(icon)}${label}</span><kbd></kbd></button>`;
+  const m = $('#ctxMenu');
+  m.innerHTML = `<div class="cm-title">${ic('db')}<span>${esc(db)}</span></div>` + [
+    item('tree-query', 'code', 'New SQL query'), item('tree-newtable', 'plus', 'New table'), item('db-refresh', 'refresh', 'Refresh'),
+    '<hr>',
+    item('tree-restore', 'restore', 'Restore a dump into…'), item('tree-export', 'download', 'Export…'),
+    '<hr>',
+    item('db-purge', 'eraser', 'Purge database…', 'danger'), item('db-drop', 'trash', 'Drop database…', 'danger'),
+  ].join('');
+  m.style.display = 'block';
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(x, innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(y, innerHeight - h - 8) + 'px';
+}
+// Drop removes the database itself; purge keeps it but drops every table, view, routine and event inside.
+async function dropOrPurgeDb(id, db, purge) {
+  const conn = connById(id)?.name || 'server';
+  let what = 'everything in it';
+  try {
+    const st = await api.stats(id, db);
+    const parts = [plural(st.tables - st.views, 'table'), st.views && plural(st.views, 'view'), st.routines && plural(st.routines, 'routine'), st.triggers && plural(st.triggers, 'trigger')].filter(Boolean);
+    what = `${parts.join(', ')} (~${fmtNum(st.rows)} rows, ${fmtBytes(st.size)})`;
+  } catch {}
+  const ok = await api.confirm(purge
+    ? { title: 'Purge database', message: `Purge all objects in ${db}?`, detail: `On ${conn}. This permanently drops ${what}. The empty database ${db} is kept. This cannot be undone.`, ok: 'Purge database' }
+    : { title: 'Drop database', message: `Drop database ${db}?`, detail: `On ${conn}. This permanently deletes the database and ${what}. This cannot be undone.`, ok: 'Drop database' });
+  if (!ok) return;
+  try {
+    if (purge) await api.purgeDatabase(id, db); else await api.dropDatabase(id, db);
+  } catch (e) { toast(e.message); return; }
+  closeTabs((t) => t.kind !== 'query' && t.connId === id && t.db === db);
+  toast(purge ? `Purged ${db}` : `Dropped database ${db}`, 'ok');
+  await loadTreeDbs(id);
+}
 /* ---- per-column filter operator menu ---- */
 const FILTER_OPS = [
   ['clear', 'Clear filter'], '-',
@@ -2805,6 +2843,9 @@ const actions = {
   'tree-refresh-all': () => { for (const c of S.conns) if (T(c.id).open) loadTreeDbs(c.id); },
   'tree-db': (el) => { const t = T(el.dataset.id), db = el.dataset.db; if (t.openDbs[db] !== undefined) { delete t.openDbs[db]; renderConns(); } else loadTreeTables(el.dataset.id, db); },
   'tree-newdb': (el) => openNewDatabase(el.dataset.id),
+  'db-refresh': (el) => loadTreeTables(el.dataset.id, el.dataset.db),
+  'db-purge': (el) => dropOrPurgeDb(el.dataset.id, el.dataset.db, true),
+  'db-drop': (el) => dropOrPurgeDb(el.dataset.id, el.dataset.db, false),
   'tree-newtable': (el) => openNewTable(el.dataset.id, el.dataset.db),
   'ct-close': () => { $('#createDialog').close(); CT = null; },
   'ct-create': () => createIt(),
@@ -3085,6 +3126,7 @@ document.addEventListener('click', (e) => {
   if (!el || el.hasAttribute('disabled')) return;
   if (el.tagName === 'A') e.preventDefault();
   if (el.dataset.act === 'noop') { e.stopPropagation(); return; }
+  if (el.closest('#ctxMenu')) closeMenu();
   actions[el.dataset.act]?.(el, e);
 });
 document.addEventListener('change', (e) => {
@@ -3148,6 +3190,8 @@ document.addEventListener('mouseover', (e) => {
 document.addEventListener('mouseup', () => { gridDrag = null; });
 document.addEventListener('contextmenu', (e) => {
   const d = S.dv;
+  const dbRow = e.target.closest('.tree-row.db');
+  if (dbRow) { e.preventDefault(); dbMenu(e.clientX, e.clientY, dbRow.dataset.id, dbRow.dataset.db); return; }
   const td = e.target.closest('#dv-tbody td[data-r]'), rn = e.target.closest('#dv-tbody td.rn');
   if ((!td && !rn) || !d.data || d.kind === 'query') { closeMenu(); return; }
   e.preventDefault();
@@ -3213,8 +3257,38 @@ document.addEventListener('drop', (e) => {
   else toast('Drop a .sql, .sql.gz or .csv file');
 });
 
+/* ================= SPLASH ================= */
+// Shown from the first paint (markup in index.html) until boot is done and the reopened table has its rows.
+// A quick start only flashes it briefly; a slow one (big table, SSH tunnel) shows progress and a way out.
+const splash = (() => {
+  const el = $('#splash'), t0 = performance.now(), MIN_MS = 450;
+  let gone = false, onClosed, onSkip;
+  const closed = new Promise((r) => { onClosed = r; });
+  const skipped = new Promise((r) => { onSkip = r; });
+  const skipBtn = $('#splashSkip');
+  const skipTimer = setTimeout(() => { if (!gone) skipBtn.hidden = false; }, 2500);
+  skipBtn.addEventListener('click', () => onSkip());
+  return {
+    closed, skipped,
+    step(pct, html) { if (gone) return; $('#splashBar').style.width = pct + '%'; $('#splashMsg').innerHTML = html; },
+    async done() {
+      if (gone) return; gone = true; clearTimeout(skipTimer);
+      $('#splashBar').style.width = '100%';
+      const wait = MIN_MS - (performance.now() - t0);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      el.classList.add('out');
+      setTimeout(() => { el.remove(); onClosed(); }, 340);
+    },
+  };
+})();
+let lastFetch = null;
+
 /* ================= BOOT ================= */
 (async function boot() {
+  try { await bootApp(); } catch (e) { console.error(e); } finally { splash.done(); }
+})();
+async function bootApp() {
+  splash.step(15, 'Loading your connections…');
   [S.env, S.conns, S.history, S.presets] = await Promise.all([api.env().catch(() => null), api.connections.list().catch(() => []), api.history.list().catch(() => []), api.presets.list().catch(() => [])]);
   if (S.r.connId && !connById(S.r.connId)) S.r.connId = null;
   if (S.c.connId && !connById(S.c.connId)) S.c.connId = null;
@@ -3225,17 +3299,23 @@ document.addEventListener('drop', (e) => {
   for (const id of openIds) if (connById(id)) T(id).open = true;
   $('#themeBtn').innerHTML = ic('palette');
   initUpdates();
-  setTimeout(() => showWhatsNew(false), 600);
+  splash.closed.then(() => setTimeout(() => showWhatsNew(false), 300));
   // Reopen the tabs from last time before the first render, so Home and the tree see them.
   const savedTabs = store.get('tabs', null);
   if (savedTabs?.list?.length) {
     for (const t of savedTabs.list) if (connById(t.connId)) S.tabs.push(t.kind === 'query' ? newQuery(t.connId, t.db, t.sql || '', t.title, t.key) : newDv(t.connId, t.db, t.table));
     S.dv = S.tabs.find((t) => t.key === savedTabs.active) || S.tabs[0] || EMPTY_DV;
   }
+  splash.step(45, S.tabs.length ? `Reopening <b>${plural(S.tabs.length, 'tab')}</b>…` : 'Getting things ready…');
   // Land back in Data & SQL if that's where the app was closed and there are tabs to show.
   renderEnv(); renderConns(); go(store.get('view') === 'data' && S.tabs.length ? 'data' : 'home');
   for (const id of openIds) if (connById(id)) loadTreeDbs(id);
   if (S.e.connId) selectExportConn(S.e.connId);
+  // Keep the splash up while the reopened table loads, unless the user chooses not to wait.
+  if (S.view === 'data' && lastFetch && S.dv.loading) {
+    splash.step(75, `Loading <b>${esc(S.dv.db)}.${esc(S.dv.table)}</b> on ${esc(connById(S.dv.connId)?.name || 'server')}…`);
+    await Promise.race([lastFetch, splash.skipped]);
+  }
   if (S.r.connId) selectRestoreConn(S.r.connId);
   if (S.c.connId) selectCsvConn(S.c.connId);
-})();
+}

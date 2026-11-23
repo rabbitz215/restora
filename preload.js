@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('api', {
   tables: (id, db) => call('db:tables', id, db),
   stats: (id, db) => call('db:stats', id, db),
   objects: (id, db) => call('db:objects', id, db),
+  dropDatabase: (id, name) => call('db:drop', id, name),
+  purgeDatabase: (id, name) => call('db:purge', id, name),
   create: { collations: (id) => call('db:collations', id), database: (id, name, coll) => call('db:create', id, name, coll), tableSql: (db, def) => call('table:sql', db, def), table: (id, db, def) => call('table:create', id, db, def) },
   browse: (id, db, table, q) => call('data:browse', id, db, table, q),
   previewEdits: (id, db, table, ch) => call('data:preview', id, db, table, ch),

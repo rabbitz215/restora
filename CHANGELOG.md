@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.11 — 2026-11-23
+- Right-click a database in the sidebar for a menu with New SQL query, New table, Refresh, Restore and Export
+- Drop database from the right-click menu: deletes the database and everything in it, after a confirmation that shows how many tables and rows will be lost
+- Purge database from the right-click menu: drops every table, view, routine and event but keeps the empty database, handy before restoring a fresh dump
+- Table tabs of a dropped or purged database are closed automatically; your SQL query tabs stay open
+- New startup screen while Restora loads your connections and reopens your last table. If a big table or SSH tunnel makes it slow, you can choose to continue without waiting
+
 ## 1.0.10 — 2026-11-21
 - Your open table and SQL tabs are restored when you reopen Restora. If you closed it in Data & SQL, it opens straight back there on the tab you had active
 - SQL typed just before closing the window is no longer lost
