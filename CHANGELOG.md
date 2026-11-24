@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.12 — 2026-11-24
+- New **Structure** view for every table tab: switch between Data and Structure at the top of the tab
+- Structure shows the table properties (engine, collation, row format, rows, data and index size, auto increment, dates, comment), every column (type, NULL, default, computed expression, extra, unsigned, zero fill, collation, comment), the primary key, indexes, unique constraints, foreign keys with their ON UPDATE / ON DELETE rules, the tables that reference this one, triggers, and the CREATE statement
+- Click a referenced or referencing table to open it. Copy the CREATE statement or open it in a new SQL tab. Sections can be collapsed and stay that way, and each tab remembers whether it was on Data or Structure
+- **Edit structure**: add, rename, retype, reorder and remove columns (NULL, default, auto increment, ON UPDATE, unsigned, zero fill, comment), set the primary key, add or remove indexes, unique constraints and foreign keys (with ON UPDATE / ON DELETE), and change the engine or table comment
+- Edits are highlighted (new, changed, removed) with a live preview of the ALTER TABLE statements; Apply (or Ctrl+S) asks for confirmation first, and only what changed is sent. Renaming or removing a column updates the indexes and foreign keys that use it
+
 ## 1.0.11 — 2026-11-23
 - Right-click a database in the sidebar for a menu with New SQL query, New table, Refresh, Restore and Export
 - Drop database from the right-click menu: deletes the database and everything in it, after a confirmation that shows how many tables and rows will be lost

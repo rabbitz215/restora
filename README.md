@@ -90,6 +90,10 @@ and the `.deb` (which asks for your password to install). You can turn automatic
   in one transaction (if anything fails, nothing is applied). Undo, revert, SQL preview and a right-click menu included.
   Editing needs a primary key; tables without one and views stay read-only.
 - Ctrl+C copies the selected cells as tab-separated text; F3 opens the full value (JSON is pretty-printed).
+- **Structure** view per table (toggle Data / Structure): properties, columns, primary key, indexes, unique constraints, foreign keys
+  with ON UPDATE / ON DELETE, the tables that reference it, triggers and the `CREATE` statement (copy it or open it in a SQL tab).
+  **Edit structure** to add / rename / retype / reorder / remove columns, set the primary key, and manage indexes, unique constraints and
+  foreign keys, with a live `ALTER TABLE` preview and a confirmation before anything runs (`Ctrl+S` applies).
 
 ### SQL editor
 - Query tabs next to your table tabs, with syntax highlighting and line numbers.

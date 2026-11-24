@@ -239,7 +239,7 @@ function go(view) {
   if (view === 'quick') { renderQuick(); loadQuick(); }
   if (view === 'export') renderExport();
   if (view === 'csv') renderCsv();
-  if (view === 'data') { renderData(); if (S.dv.table && !S.dv.data && !S.dv.loading) lastFetch = fetchData(S.dv); }
+  if (view === 'data') { renderData(); if (S.dv.table && S.dv.mode === 'structure') ensureLoaded(S.dv); else if (S.dv.table && !S.dv.data && !S.dv.loading) lastFetch = fetchData(S.dv); }
   if (view === 'history') loadHistory();
   if (view === 'job') renderJob();
   $('#main').classList.toggle('flush', view === 'data');
@@ -1020,13 +1020,14 @@ async function startExport() {
 
 /* ================= DATA VIEWER ================= */
 let dvTimer = null;
-const newDv = (connId = null, db = null, table = null) => ({ key: JSON.stringify([connId, db, table]), connId, db, table, filters: {}, search: '', sort: [], offset: 0, limit: store.get('dv.limit', 200), data: null, loading: false, error: null, sel: null, range: null, ch: { edits: {}, deletes: {}, inserts: [], undo: [] }, saving: false, seq: 0, scroll: null, refs: null, colSearch: '', refSearch: '', hidden: new Set(table ? store.get(`hide.${connId}.${db}.${table}`, []) : []) });
+const newDv = (connId = null, db = null, table = null) => ({ key: JSON.stringify([connId, db, table]), connId, db, table, filters: {}, search: '', sort: [], offset: 0, limit: store.get('dv.limit', 200), data: null, loading: false, error: null, sel: null, range: null, ch: { edits: {}, deletes: {}, inserts: [], undo: [] }, saving: false, seq: 0, scroll: null, refs: null, mode: 'data', st: null, stLoading: false, stError: null, stSeq: 0, colSearch: '', refSearch: '', hidden: new Set(table ? store.get(`hide.${connId}.${db}.${table}`, []) : []) });
 const saveHidden = (d) => store.set(`hide.${d.connId}.${d.db}.${d.table}`, [...d.hidden]);
 let panelOpen = store.get('dv.panel', true);
+S.stClosed = new Set(store.get('st.closed', []));
 const fkOf = (d, col) => d.refs?.out.find((f) => f.columns.includes(col));
 const EMPTY_DV = newDv();
 S.dv = EMPTY_DV;
-const saveTabs = () => store.set('tabs', { list: S.tabs.map(({ kind, key, title, sql, connId, db, table }) => (kind === 'query' ? { kind, key, title, sql, connId, db } : { connId, db, table })), active: S.dv.key });
+const saveTabs = () => store.set('tabs', { list: S.tabs.map(({ kind, key, title, sql, connId, db, table, mode }) => (kind === 'query' ? { kind, key, title, sql, connId, db } : { connId, db, table, mode })), active: S.dv.key });
 let saveTabsTimer = null;
 const saveTabsSoon = () => { clearTimeout(saveTabsTimer); saveTabsTimer = setTimeout(saveTabs, 400); };
 // Flush pending SQL edits when the window closes, so the last keystrokes aren't lost.
@@ -1042,11 +1043,16 @@ function activateTab(tab, { show = true } = {}) {
   S.dv = tab || EMPTY_DV;
   saveTabs();
   if (show) go('data'); else if (S.view === 'data') { renderData(); renderConns(); }
-  if (tab && !tab.data && !tab.loading) fetchData(tab);
+  if (tab) ensureLoaded(tab);
+}
+// Loads what the tab's current mode shows (rows for Data, metadata for Structure), once.
+function ensureLoaded(tab) {
+  if (tab.kind !== 'query' && tab.mode === 'structure') { if (!tab.st && !tab.stLoading) fetchStructure(tab); }
+  else if (!tab.data && !tab.loading) fetchData(tab);
 }
 function openTable(connId, db, table, filters = null) {
   let tab = S.tabs.find((t) => t.connId === connId && t.db === db && t.table === table);
-  if (tab && filters) { rememberScroll(); Object.assign(tab, { filters: { ...filters }, search: '', offset: 0, data: null, sel: null, scroll: null }); if (S.dv === tab) S.dv = EMPTY_DV; }
+  if (tab && filters) { rememberScroll(); Object.assign(tab, { filters: { ...filters }, search: '', offset: 0, data: null, sel: null, scroll: null, mode: 'data' }); if (S.dv === tab) S.dv = EMPTY_DV; }
   if (!tab) {
     tab = newDv(connId, db, table);
     // Keep tabs of the same database next to each other.
@@ -1059,6 +1065,7 @@ function openTable(connId, db, table, filters = null) {
 }
 async function closeTab(key) {
   const i = S.tabs.findIndex((t) => t.key === key); if (i < 0) return;
+  if (S.tabs[i].kind !== 'query' && S.tabs[i].se && seCount(S.tabs[i]) && !(await api.confirm({ title: 'Unsaved structure changes', message: `Close ${S.tabs[i].table} without applying the structure changes?`, detail: 'Nothing has been applied to the database yet.', ok: 'Discard changes' }))) return;
   if (S.tabs[i].kind !== 'query' && hasChanges(S.tabs[i]) && !(await api.confirm({ title: 'Unsaved changes', message: `Close ${S.tabs[i].table} without saving?`, detail: 'Your edits to this table have not been saved and will be lost.', ok: 'Discard changes' }))) return;
   const [tab] = S.tabs.splice(i, 1);
   if (tab.kind === 'query') api.sql.close(tab.key).catch(() => {});
@@ -1105,21 +1112,22 @@ function renderData() {
     return;
   }
   const conn = connById(d.connId);
-  const nf = Object.values(d.filters).filter((v) => String(v).trim()).length;
+  const st = d.mode === 'structure';
   el.innerHTML = `<div class="dv">
     <div class="dv-tabs" id="dv-tabs"></div>
     <div class="dv-body">
-    ${panelOpen ? '<aside class="dv-side" id="dv-side"></aside>' : ''}
+    ${panelOpen && !st ? '<aside class="dv-side" id="dv-side"></aside>' : ''}
     <div class="dv-main">
     <div class="dv-head">
-      <button class="icon-btn ${panelOpen ? 'on' : ''}" data-act="dv-panel" title="${panelOpen ? 'Hide' : 'Show'} columns &amp; relationships panel">${ic('panel')}</button>
+      ${st ? '' : `<button class="icon-btn ${panelOpen ? 'on' : ''}" data-act="dv-panel" title="${panelOpen ? 'Hide' : 'Show'} columns &amp; relationships panel">${ic('panel')}</button>`}
       <div class="crumbs"><span class="dot" style="color:${esc(conn?.color || '#888')};width:8px;height:8px"></span><span>${esc(conn?.name || '?')}</span><span class="sep">/</span><span class="mono">${esc(d.db)}</span><span class="sep">/</span><b class="mono">${esc(d.table)}</b></div>
+      <div class="seg dv-mode"><button class="${st ? '' : 'on'}" data-act="dv-mode" data-mode="data">${ic('table')}Data</button><button class="${st ? 'on' : ''}" data-act="dv-mode" data-mode="structure">${ic('key')}Structure</button></div>
       <div class="right">
         <button class="btn sm ghost" data-act="dv-export" title="Export this table to .sql.gz">${ic('download')}Export table</button>
         <button class="btn sm" data-act="dv-refresh">${ic('refresh')}Refresh</button>
       </div>
     </div>
-    <div class="dv-toolbar">
+    ${st ? '<div class="st" id="dv-struct"></div>' : `<div class="dv-toolbar">
       <div class="input-icon dv-search">${ic('search')}<input class="input" id="dv-search" placeholder="Search all columns…" value="${esc(d.search)}" data-input="dv-search" spellcheck="false"></div>
       <div id="dv-finfo">${filterInfo()}</div>
       <div class="spacer"></div>
@@ -1127,12 +1135,295 @@ function renderData() {
     </div>
     <div class="dv-changes" id="dv-changes"></div>
     <div class="dv-grid ${d.loading ? 'loading' : ''}" id="dv-grid" tabindex="-1"><table class="grid"><thead id="dv-thead"></thead><tbody id="dv-tbody"></tbody></table><div id="dv-msg"></div></div>
-    <div class="dv-status" id="dv-status"></div>
+    <div class="dv-status" id="dv-status"></div>`}
     </div></div>
   </div>`;
-  renderTabs(); renderSide(); renderDataHead(); renderDataBody();
+  renderTabs();
+  if (st) return renderStructure();
+  renderSide(); renderDataHead(); renderDataBody();
   if (d.scroll) { const g = $('#dv-grid'); g.scrollTop = d.scroll[0]; g.scrollLeft = d.scroll[1]; }
 }
+
+/* ---- structure view ---- */
+async function fetchStructure(d = S.dv) {
+  if (!d.table) return;
+  const seq = ++d.stSeq;
+  d.stLoading = true; d.stError = null;
+  if (S.dv === d) { renderStructure(); renderTabs(); }
+  try {
+    const res = await api.structure(d.connId, d.db, d.table);
+    if (seq !== d.stSeq) return;
+    d.st = res;
+  } catch (e) {
+    if (seq !== d.stSeq) return;
+    d.stError = e.message;
+  }
+  d.stLoading = false;
+  if (S.dv === d && S.view === 'data') { renderStructure(); renderTabs(); }
+}
+const stYesNo = (v) => (v ? '<span class="st-yes">YES</span>' : '<span class="st-no">NO</span>');
+const stCols = (list) => list.map((c) => `<span class="mono">${esc(c)}</span>`).join(', ');
+const stDefault = (c) => {
+  if (c.default == null) return c.nullable && !c.auto && !c.generated ? '<span class="st-null">NULL</span>' : '';
+  return /^(CURRENT_TIMESTAMP|current_timestamp|now)\b/.test(c.default) || /^\(.*\)$/s.test(c.default) ? `<span class="mono st-fn">${esc(c.default)}</span>` : `<span class="mono">${esc(c.default)}</span>`;
+};
+function stSection(key, title, count, body, extra = '') {
+  const closed = S.stClosed.has(key);
+  return `<section class="st-sec ${closed ? 'closed' : ''}">
+    <header class="st-sec-h" data-act="st-toggle" data-key="${key}">${ic(closed ? 'chev' : 'sortDown')}<b>${title}</b>${count == null ? '' : `<span class="cnt">${fmtNum(count)}</span>`}${extra}</header>
+    ${closed ? '' : `<div class="st-sec-b">${body}</div>`}
+  </section>`;
+}
+function renderStructure() {
+  const el = $('#dv-struct'); if (!el) return;
+  const d = S.dv, x = d.st;
+  if (!x) {
+    el.innerHTML = d.stError ? `<div class="dv-empty">${ic('alert')}<b>Couldn't read the structure</b><span>${esc(d.stError)}</span><button class="btn mt" data-act="dv-refresh">${ic('retry')}Try again</button></div>`
+      : `<div class="dv-empty">${ic('loader', 'spin')}<span>Reading structure…</span></div>`;
+    return;
+  }
+  if (d.se) return renderStructureEdit(el);
+  const i = x.info, fkCol = new Map();
+  for (const f of x.foreignKeys) f.columns.forEach((c, j) => fkCol.set(c, `${f.refTable}.${f.refColumns[j]}`));
+  const pkSet = new Set(x.primaryKey?.columns || []);
+  const prop = (k, v, cls = '') => `<div class="st-prop"><span>${k}</span><b class="${cls}">${v}</b></div>`;
+  const props = x.view
+    ? prop('Type', 'View') + prop('Columns', fmtNum(x.columns.length))
+    : prop('Engine', esc(i.engine || '—')) + prop('Collation', esc(i.collation || '—'), 'mono') + prop('Row format', esc(i.rowFormat || '—'))
+      + prop('Rows', (i.engine === 'InnoDB' ? '≈ ' : '') + fmtNum(i.rows)) + prop('Data size', fmtBytes(i.dataBytes)) + prop('Index size', fmtBytes(i.indexBytes))
+      + prop('Auto increment', i.autoInc == null ? '—' : fmtNum(i.autoInc)) + prop('Created', esc(fmtWhen(i.created))) + prop('Updated', esc(i.updated ? fmtWhen(i.updated) : '—'));
+  const comment = i.comment ? `<div class="st-comment">${ic('info')}<span>${esc(i.comment)}</span></div>` : '';
+
+  const hasExpr = x.columns.some((c) => c.expr);
+  const cols = `<div class="st-tbl-wrap"><table class="st-tbl"><thead><tr><th class="num">#</th><th>Name</th><th>Data type</th><th>Nullability</th><th>Default value</th>${hasExpr ? '<th>Computed expression</th>' : ''}<th>Extra</th><th>Unsigned</th><th>Zero fill</th><th>Collation</th><th>Comment</th></tr></thead><tbody>
+    ${x.columns.map((c, n) => `<tr>
+      <td class="num muted">${n + 1}</td>
+      <td class="st-name">${pkSet.has(c.name) ? `<span class="st-ico pk" title="Primary key">${ic('key')}</span>` : fkCol.has(c.name) ? `<span class="st-ico fk" title="References ${esc(fkCol.get(c.name))}">${ic('link')}</span>` : '<span class="st-ico"></span>'}<span class="mono ${pkSet.has(c.name) ? 'b' : ''}">${esc(c.name)}</span></td>
+      <td class="mono st-type">${esc(c.type.replace(/\s+(unsigned|zerofill)/gi, ''))}</td>
+      <td>${c.nullable ? '<span class="st-null">NULL</span>' : '<span class="st-nn">NOT NULL</span>'}</td>
+      <td>${stDefault(c)}</td>
+      ${hasExpr ? `<td class="mono">${esc(c.expr)}</td>` : ''}
+      <td class="muted">${esc(c.extra.replace(/DEFAULT_GENERATED\s*/i, '').trim())}</td>
+      <td>${stYesNo(c.unsigned)}</td><td>${stYesNo(c.zerofill)}</td>
+      <td class="mono muted">${esc(c.collation || '')}</td>
+      <td class="st-cmt">${esc(c.comment)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+
+  const empty = (t) => `<div class="st-empty">${t}</div>`;
+  const idxTable = (list) => `<div class="st-tbl-wrap"><table class="st-tbl"><thead><tr><th>Name</th><th>Columns</th><th>Type</th><th>Comment</th></tr></thead><tbody>
+    ${list.map((k) => `<tr><td class="mono">${esc(k.name)}</td><td>${stCols(k.columns)}</td><td class="muted">${esc(k.type)}</td><td class="st-cmt">${esc(k.comment)}</td></tr>`).join('')}</tbody></table></div>`;
+  const pk = x.primaryKey ? `<div class="st-tbl-wrap"><table class="st-tbl"><thead><tr><th>Columns</th><th>Type</th></tr></thead><tbody><tr><td>${stCols(x.primaryKey.columns)}</td><td class="muted">${esc(x.primaryKey.type)}</td></tr></tbody></table></div>`
+    : empty(x.view ? 'Views have no primary key' : 'No primary key defined. Rows in this table can\'t be edited in the grid.');
+  const fkTable = (list, dir) => `<div class="st-tbl-wrap"><table class="st-tbl"><thead><tr><th>Name</th>${dir === 'in' ? '<th>Table</th>' : ''}<th>${dir === 'in' ? 'Columns' : 'Base columns'}</th><th>Referenced table</th><th>Referenced columns</th><th>On update</th><th>On delete</th></tr></thead><tbody>
+    ${list.map((f, n) => {
+      const other = dir === 'in' ? [f.db, f.table] : [f.refDb, f.refTable];
+      const link = `<a class="st-link" data-act="st-open" data-dir="${dir}" data-i="${n}" title="Open ${esc(other[0])}.${esc(other[1])}">${ic(dir === 'in' ? 'arrowDownLeft' : 'arrowUpRight')}${other[0] !== d.db ? `<span class="muted">${esc(other[0])}.</span>` : ''}${esc(other[1])}</a>`;
+      return `<tr><td class="mono">${esc(f.name)}</td>${dir === 'in' ? `<td>${link}</td>` : ''}<td>${stCols(f.columns)}</td><td>${dir === 'in' ? `<span class="mono">${esc(f.refTable)}</span>` : link}</td><td>${stCols(f.refColumns)}</td><td>${stRule(f.onUpdate)}</td><td>${stRule(f.onDelete)}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+  const trg = `<div class="st-tbl-wrap"><table class="st-tbl"><thead><tr><th>Name</th><th>Timing</th><th>Event</th></tr></thead><tbody>
+    ${x.triggers.map((t) => `<tr><td class="mono">${esc(t.name)}</td><td>${esc(t.timing)}</td><td>${esc(t.event)}</td></tr>`).join('')}</tbody></table></div>`;
+  const sqlBtns = `<span class="st-sec-tools"><button class="btn sm ghost" data-act="st-copy-sql" title="Copy the CREATE statement">${ic('copy')}Copy</button><button class="btn sm ghost" data-act="st-query-sql" title="Open the CREATE statement in a new SQL tab">${ic('code')}Open in SQL editor</button></span>`;
+
+  const sc = el.scrollTop;
+  el.innerHTML = `<div class="st-inner ${d.stLoading ? 'loading' : ''}">
+    ${x.view ? '' : `<div class="st-bar"><span class="muted">${ic('info')}Read-only view of <b class="mono">${esc(d.table)}</b>.</span><div class="spacer"></div><button class="btn sm primary" data-act="se-edit">${ic('pencil')}Edit structure</button></div>`}
+    ${stSection('props', x.view ? 'View properties' : 'Table properties', null, `<div class="st-props">${props}</div>${comment}`)}
+    ${stSection('cols', 'Columns', x.columns.length, cols)}
+    ${x.view ? '' : stSection('pk', 'Primary key', null, pk)}
+    ${x.view ? '' : stSection('idx', 'Indexes', x.indexes.length, x.indexes.length ? idxTable(x.indexes) : empty('No index defined'))}
+    ${x.view ? '' : stSection('uq', 'Unique constraints', x.uniques.length, x.uniques.length ? idxTable(x.uniques) : empty('No unique constraint defined'))}
+    ${x.view ? '' : stSection('fk', 'Foreign keys', x.foreignKeys.length, x.foreignKeys.length ? fkTable(x.foreignKeys, 'out') : empty('No foreign key defined'))}
+    ${stSection('dep', 'Dependencies', x.dependencies.length, x.dependencies.length ? fkTable(x.dependencies, 'in') : empty('No other table references this one'))}
+    ${x.view ? '' : stSection('trg', 'Triggers', x.triggers.length, x.triggers.length ? trg : empty('No trigger defined'))}
+    ${stSection('sql', 'SQL', null, `<pre class="ct-sql st-sql">${hlSql(x.ddl).replace(/\n $/, '')}</pre>`, sqlBtns)}
+  </div>`;
+  el.scrollTop = sc;
+}
+
+/* ---- structure editing ---- */
+const FK_RULE_OPTS = ['RESTRICT', 'CASCADE', 'SET NULL', 'NO ACTION', 'SET DEFAULT'];
+const ENGINES = ['InnoDB', 'MyISAM', 'Aria', 'MEMORY', 'ARCHIVE', 'CSV'];
+const seCols = (txt) => String(txt || '').split(',').map((t) => t.trim()).filter(Boolean);
+const seTok = (t) => t.replace(/\s*\(\s*\d+\s*\)$/, '');
+const SE_FIELDS = {
+  cols: ['name', 'base', 'unsigned', 'zerofill', 'nullable', 'defaultSql', 'auto', 'onUpdate', 'comment', 'expr', 'stored', 'pk'],
+  idx: ['name', 'columns', 'unique'],
+  fks: ['name', 'columns', 'refTable', 'refColumns', 'onUpdate', 'onDelete'],
+};
+const seSig = (g, it) => JSON.stringify(SE_FIELDS[g].map((f) => it[f]));
+function seStart(d) {
+  const x = d.st, pk = new Set(x.primaryKey?.columns || []);
+  const se = {
+    engine: x.info.engine || 'InnoDB', comment: x.info.comment || '', sql: [], err: null, busy: false, timer: null, tables: null,
+    cols: x.columns.map((c) => ({ k: uid(), orig: c.name, _prev: c.name, name: c.name, base: c.base, unsigned: c.unsigned, zerofill: c.zerofill, nullable: c.nullable, defaultSql: c.defaultSql, auto: c.auto, onUpdate: c.onUpdate, comment: c.comment, expr: c.expr, stored: c.stored, pk: pk.has(c.name) })),
+    idx: [...x.indexes, ...x.uniques].map((i) => ({ k: uid(), orig: i.name, name: i.name, columns: i.columns.join(', '), unique: i.unique, kind: /FULLTEXT|SPATIAL/i.test(i.type) ? i.type : '', comment: i.comment, locked: i.columns.includes('(expression)') })),
+    fks: x.foreignKeys.map((f) => ({ k: uid(), orig: f.name, name: f.name, columns: f.columns.join(', '), refDb: f.refDb, refTable: f.refTable, refColumns: f.refColumns.join(', '), onUpdate: f.onUpdate || 'NO ACTION', onDelete: f.onDelete || 'RESTRICT' })),
+  };
+  se.snap = Object.fromEntries(['cols', 'idx', 'fks'].map((g) => [g, new Map(se[g].map((it) => [it.k, seSig(g, it)]))]));
+  se.order = se.cols.map((c) => c.k).join();
+  d.se = se;
+  const t = T(d.connId).openDbs[d.db];
+  if (Array.isArray(t)) se.tables = t.map((o) => o.name);
+  else api.objects(d.connId, d.db).then((o) => { se.tables = o.map((x) => x.name); const dl = $('#se-tables'); if (dl && d.se === se) dl.innerHTML = seTableOpts(se); }).catch(() => {});
+}
+const seTableOpts = (se) => (se.tables || []).map((n) => `<option value="${esc(n)}">`).join('');
+const seState = (se, g, it) => (it.removed ? 'del' : !it.orig ? 'new' : seSig(g, it) !== se.snap[g].get(it.k) ? 'mod' : '');
+function seCount(d) {
+  const se = d.se; if (!se) return 0;
+  let n = 0;
+  for (const g of ['cols', 'idx', 'fks']) for (const it of se[g]) if (seState(se, g, it) && !(it.removed && !it.orig)) n++;
+  if (se.cols.filter((c) => c.orig && !c.removed).map((c) => c.k).join() !== se.order.split(',').filter((k) => se.cols.find((c) => c.k === k && !c.removed)).join()) n++;
+  if (se.engine !== (d.st.info.engine || 'InnoDB')) n++;
+  if (se.comment !== (d.st.info.comment || '')) n++;
+  return n;
+}
+// What the server diffs against the live table (lib/db.js alterTableSql).
+function seDraft(d) {
+  const se = d.se, live = se.cols.filter((c) => !c.removed);
+  const pkNames = live.filter((c) => c.pk || c.auto).map((c) => c.name);
+  const byOrig = new Map(live.filter((c) => c.orig).map((c) => [c.orig, c.name]));
+  const origPk = (d.st.primaryKey?.columns || []).map((n) => byOrig.get(n)).filter(Boolean);
+  const primaryKey = origPk.length === pkNames.length && origPk.every((n) => pkNames.includes(n)) ? origPk : pkNames;
+  return {
+    engine: se.engine, comment: se.comment, primaryKey,
+    columns: live.map(({ orig, name, base, unsigned, zerofill, nullable, defaultSql, auto, onUpdate, comment, expr, stored }) => ({ orig, name, base, unsigned, zerofill, nullable, defaultSql, auto, onUpdate, comment, expr, stored })),
+    indexes: se.idx.filter((i) => !i.removed).map((i) => ({ orig: i.orig, name: i.name, columns: seCols(i.columns), unique: i.unique, kind: i.kind, comment: i.comment })),
+    foreignKeys: se.fks.filter((f) => !f.removed).map((f) => ({ orig: f.orig, name: f.name, columns: seCols(f.columns), refDb: f.refDb || d.db, refTable: f.refTable, refColumns: seCols(f.refColumns), onUpdate: f.onUpdate, onDelete: f.onDelete })),
+  };
+}
+function seRefresh(d = S.dv) {
+  const se = d.se; if (!se) return;
+  seBar(d);
+  clearTimeout(se.timer);
+  se.timer = setTimeout(async () => {
+    try { se.sql = await api.alterSql(d.connId, d.db, d.table, seDraft(d)); se.err = null; }
+    catch (e) { se.sql = []; se.err = e.message; }
+    if (d.se === se && S.dv === d) { seSqlRender(d); seBar(d); }
+  }, 200);
+}
+function seSqlRender(d) {
+  const el = $('#se-sql'); if (!el) return;
+  const se = d.se;
+  el.innerHTML = se.err ? `<span class="ct-sql-err">${ic('alert')}${esc(se.err)}</span>`
+    : se.sql.length ? hlSql(se.sql.join(';\n\n') + ';').replace(/\n $/, '') : '<span class="muted">-- No changes yet</span>';
+}
+function seBar(d) {
+  const el = $('#se-bar'); if (!el || !d.se) return;
+  const n = seCount(d), se = d.se;
+  el.innerHTML = `<span class="se-count ${n ? 'on' : ''}">${n ? `${plural(n, 'change')}` : 'No changes'}</span>
+    ${se.err && n ? `<span class="se-err" title="${esc(se.err)}">${ic('alert')}${esc(se.err)}</span>` : ''}
+    <div class="spacer"></div>
+    <button class="btn sm ghost" data-act="se-add" data-g="cols">${ic('plus')}Add column</button>
+    <button class="btn sm ghost" data-act="se-reset" ${n ? '' : 'disabled'}>${ic('retry')}Reset</button>
+    <button class="btn sm" data-act="se-cancel">Cancel</button>
+    <button class="btn sm primary" data-act="se-apply" ${!n || se.err || se.busy || !se.sql.length ? 'disabled' : ''} title="Run the ALTER TABLE statements (Ctrl+S)">${se.busy ? ic('loader', 'spin') : ic('check')}Apply changes</button>`;
+  for (const g of ['cols', 'idx', 'fks']) for (const it of se[g]) { const row = document.querySelector(`#dv-struct tr[data-k="${it.k}"]`); if (row) row.dataset.st = seState(se, g, it); }
+  const pk = $('#se-pk'); if (pk) pk.innerHTML = sePkText(d);
+}
+const sePkText = (d) => { const p = seDraft(d).primaryKey; return p.length ? stCols(p) : '<span class="muted">No primary key. Tick PK on one or more columns.</span>'; };
+
+function renderStructureEdit(el) {
+  const d = S.dv, se = d.se, x = d.st;
+  const a = document.activeElement, focus = a && el.contains(a) && a.dataset.f ? { k: a.dataset.k, f: a.dataset.f, s: a.selectionStart, e: a.selectionEnd } : null;
+  const inp = (g, it, f, o = {}) => `<input class="input sm ${o.mono === false ? '' : 'mono'}" value="${esc(it[f] ?? '')}" data-input="se" data-g="${g}" data-k="${it.k}" data-f="${f}" spellcheck="false" ${o.ph ? `placeholder="${esc(o.ph)}"` : ''} ${o.list ? `list="${o.list}"` : ''} ${o.dis || it.removed ? 'disabled' : ''}>`;
+  const chk = (g, it, f, o = {}) => `<input type="checkbox" class="check" data-change="se-chk" data-g="${g}" data-k="${it.k}" data-f="${f}" ${it[f] ? 'checked' : ''} ${o.dis || it.removed ? 'disabled' : ''} ${o.title ? `title="${esc(o.title)}"` : ''}>`;
+  const sel = (g, it, f, opts) => `<select class="select sm" data-change="se-sel" data-g="${g}" data-k="${it.k}" data-f="${f}" ${it.removed ? 'disabled' : ''}>${opts.map((v) => `<option ${v === it[f] ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
+  const del = (g, it) => it.removed ? `<button class="btn sm ghost" data-act="se-undo" data-g="${g}" data-k="${it.k}" title="Keep it">${ic('retry')}Undo</button>`
+    : `<button class="icon-btn" data-act="se-del" data-g="${g}" data-k="${it.k}" title="Remove">${ic('trash')}</button>`;
+  const hasExpr = se.cols.some((c) => c.expr);
+  const live = se.cols.filter((c) => !c.removed);
+
+  const cols = `<div class="st-tbl-wrap"><table class="st-tbl se-tbl"><thead><tr><th class="c" title="Primary key">PK</th><th>Name</th><th>Data type</th><th class="c">NULL</th><th>Default value</th>${hasExpr ? '<th>Computed expression</th>' : ''}<th class="c" title="Auto increment">AI</th><th>On update</th><th class="c">Unsigned</th><th class="c" title="Zero fill">Zerofill</th><th>Comment</th><th></th></tr></thead><tbody>
+    ${se.cols.map((c) => {
+      const li = live.indexOf(c);
+      return `<tr data-k="${c.k}" data-st="${seState(se, 'cols', c)}">
+      <td class="c">${chk('cols', c, 'pk', { dis: c.auto, title: c.auto ? 'Auto increment columns are always in the primary key' : 'Primary key' })}</td>
+      <td>${inp('cols', c, 'name', { ph: 'column_name' })}</td>
+      <td>${inp('cols', c, 'base', { list: 'se-types', ph: 'VARCHAR(255)' })}</td>
+      <td class="c">${chk('cols', c, 'nullable', { dis: c.auto })}</td>
+      <td>${inp('cols', c, 'defaultSql', { ph: c.auto ? 'auto' : c.expr ? 'computed' : 'none', dis: c.auto || !!c.expr })}</td>
+      ${hasExpr ? `<td>${c.expr || !c.orig ? inp('cols', c, 'expr', { ph: '' }) : ''}</td>` : ''}
+      <td class="c">${chk('cols', c, 'auto', { dis: !!c.expr })}</td>
+      <td>${inp('cols', c, 'onUpdate', { ph: '' , list: 'se-onupd' })}</td>
+      <td class="c">${chk('cols', c, 'unsigned')}</td>
+      <td class="c">${chk('cols', c, 'zerofill')}</td>
+      <td>${inp('cols', c, 'comment', { mono: false })}</td>
+      <td class="se-act"><button class="icon-btn" data-act="se-move" data-k="${c.k}" data-dir="-1" title="Move up" ${c.removed || li <= 0 ? 'disabled' : ''}>${ic('sortUp')}</button><button class="icon-btn" data-act="se-move" data-k="${c.k}" data-dir="1" title="Move down" ${c.removed || li < 0 || li >= live.length - 1 ? 'disabled' : ''}>${ic('sortDown')}</button>${del('cols', c)}</td></tr>`;
+    }).join('')}
+    </tbody></table></div>
+    <datalist id="se-types">${CT_TYPES.map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+    <datalist id="se-onupd"><option value="CURRENT_TIMESTAMP"></datalist>
+    <div class="se-hint">Defaults are SQL: <span class="mono">'text'</span>, <span class="mono">0</span>, <span class="mono">NULL</span>, <span class="mono">CURRENT_TIMESTAMP</span>, <span class="mono">(expression)</span>. Plain text is quoted for you. Leave empty for no default.</div>`;
+
+  const colList = `<datalist id="se-cols">${live.map((c) => `<option value="${esc(c.name)}">`).join('')}</datalist>`;
+  const idxRows = (uniq) => {
+    const list = se.idx.filter((i) => i.unique === uniq);
+    if (!list.length) return `<div class="st-empty">${uniq ? 'No unique constraint defined' : 'No index defined'}</div>`;
+    return `<div class="st-tbl-wrap"><table class="st-tbl se-tbl"><thead><tr><th>Name</th><th>Columns <span class="muted">(comma-separated, prefix length as col(10))</span></th><th>Type</th><th></th></tr></thead><tbody>
+      ${list.map((i) => `<tr data-k="${i.k}" data-st="${seState(se, 'idx', i)}"><td>${inp('idx', i, 'name', { ph: 'auto-named', dis: i.locked })}</td><td class="wide">${inp('idx', i, 'columns', { ph: 'column_a, column_b', list: 'se-cols', dis: i.locked })}</td><td class="muted">${esc(i.kind || 'BTREE')}${i.locked ? ' · expression' : ''}</td><td class="se-act">${del('idx', i)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  };
+  const fkRows = se.fks.length ? `<div class="st-tbl-wrap"><table class="st-tbl se-tbl"><thead><tr><th>Name</th><th>Base columns</th><th>Referenced table</th><th>Referenced columns</th><th>On update</th><th>On delete</th><th></th></tr></thead><tbody>
+    ${se.fks.map((f) => `<tr data-k="${f.k}" data-st="${seState(se, 'fks', f)}"><td>${inp('fks', f, 'name', { ph: 'auto-named' })}</td><td>${inp('fks', f, 'columns', { ph: 'column', list: 'se-cols' })}</td><td>${f.refDb && f.refDb !== d.db ? `<span class="muted mono">${esc(f.refDb)}.</span>` : ''}${inp('fks', f, 'refTable', { ph: 'table', list: 'se-tables' })}</td><td>${inp('fks', f, 'refColumns', { ph: 'id' })}</td><td>${sel('fks', f, 'onUpdate', FK_RULE_OPTS)}</td><td>${sel('fks', f, 'onDelete', FK_RULE_OPTS)}</td><td class="se-act">${del('fks', f)}</td></tr>`).join('')}
+    </tbody></table></div><datalist id="se-tables">${seTableOpts(se)}</datalist>` : `<div class="st-empty">No foreign key defined</div><datalist id="se-tables">${seTableOpts(se)}</datalist>`;
+  const add = (g, extra = '') => `<span class="st-sec-tools"><button class="btn sm ghost" data-act="se-add" data-g="${g}" ${extra}>${ic('plus')}Add new</button></span>`;
+  const engines = [...new Set([se.engine, ...ENGINES])];
+  const props = `<div class="se-props">
+      <label class="field"><span>Engine</span><select class="select sm" data-change="se-prop" data-f="engine">${engines.map((e) => `<option ${e === se.engine ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select></label>
+      <label class="field grow"><span>Comment</span><input class="input sm" value="${esc(se.comment)}" data-input="se-prop" data-f="comment" data-k="props" placeholder="No comment"></label>
+      <div class="field"><span>Collation</span><b class="mono">${esc(x.info.collation || '—')}</b></div>
+    </div>`;
+
+  const sc = el.scrollTop;
+  el.innerHTML = `<div class="st-inner se ${se.busy ? 'loading' : ''}">
+    ${stSection('props', 'Table properties', null, props)}
+    ${stSection('cols', 'Columns', live.length, cols, add('cols'))}
+    ${stSection('pk', 'Primary key', null, `<div class="st-empty se-pk" id="se-pk">${sePkText(d)}</div>`)}
+    ${stSection('idx', 'Indexes', se.idx.filter((i) => !i.unique && !i.removed).length, idxRows(false), add('idx', 'data-unique="0"'))}
+    ${stSection('uq', 'Unique constraints', se.idx.filter((i) => i.unique && !i.removed).length, idxRows(true), add('idx', 'data-unique="1"'))}
+    ${stSection('fk', 'Foreign keys', se.fks.filter((f) => !f.removed).length, fkRows, add('fks'))}
+    ${stSection('sql', 'Pending SQL', se.sql.length || null, `<pre class="ct-sql st-sql" id="se-sql"></pre><div class="se-hint">${ic('alert')}ALTER TABLE can't be undone or rolled back. Large tables may be locked or copied while it runs.</div>`)}
+    ${colList}
+  </div>
+  <div class="se-bar" id="se-bar"></div>`;
+  el.scrollTop = sc;
+  seSqlRender(d); seBar(d);
+  if (focus) {
+    const f = el.querySelector(`[data-k="${focus.k}"][data-f="${focus.f}"]`);
+    if (f && !f.disabled) { f.focus({ preventScroll: true }); try { f.setSelectionRange(focus.s, focus.e); } catch {} }
+  }
+}
+const seItem = (d, g, k) => d.se?.[g]?.find((it) => it.k === k);
+// Keeps index / foreign key / primary key column lists in step with column renames and removals.
+function seRenameRefs(se, from, to) {
+  const fix = (txt) => seCols(txt).flatMap((t) => (seTok(t) === from ? (to == null ? [] : [to + t.slice(seTok(t).length)]) : [t])).join(', ');
+  for (const i of se.idx) if (!i.removed && !i.locked) { i.columns = fix(i.columns); if (to == null && !seCols(i.columns).length) i.removed = true; }
+  for (const f of se.fks) if (!f.removed) { const before = seCols(f.columns).length; f.columns = fix(f.columns); if (to == null && seCols(f.columns).length !== before) f.removed = true; }
+}
+async function seApply(d = S.dv) {
+  const se = d.se; if (!se || se.busy) return;
+  clearTimeout(se.timer);
+  try { se.sql = await api.alterSql(d.connId, d.db, d.table, seDraft(d)); se.err = null; } catch (e) { se.err = e.message; seSqlRender(d); seBar(d); return toast(e.message); }
+  if (!se.sql.length) return toast('Nothing to apply', 'ok');
+  if (!(await api.confirm({ title: 'Apply structure changes', message: `Run ${plural(se.sql.length, 'ALTER TABLE statement')} on ${d.db}.${d.table}?`, detail: se.sql.join(';\n\n') + ';\n\nThis can\'t be undone.', ok: 'Apply changes' }))) return;
+  se.busy = true; renderStructure();
+  try {
+    await api.alter(d.connId, d.db, d.table, seDraft(d));
+    toast(`Updated the structure of ${d.table}`, 'ok');
+    d.se = null; d.data = null; d.refs = null;
+    await fetchStructure(d);
+  } catch (e) {
+    se.busy = false; se.err = e.message;
+    toast(e.message);
+    if (S.dv === d) renderStructure();
+    seRefresh(d);
+  }
+}
+async function seConfirmDiscard(d = S.dv) {
+  if (!d.se || !seCount(d)) return true;
+  return api.confirm({ title: 'Discard structure changes', message: `Discard ${plural(seCount(d), 'unsaved change')} to ${d.table}?`, detail: 'Nothing has been applied to the database yet.', ok: 'Discard' });
+}
+const stRule = (r) => (r ? `<span class="st-rule ${/CASCADE/.test(r) ? 'cascade' : /SET NULL|SET DEFAULT/.test(r) ? 'setnull' : ''}">${esc(r)}</span>` : '<span class="muted">—</span>');
 
 function filterInfo() {
   const d = S.dv;
@@ -2885,7 +3176,53 @@ const actions = {
     fetchData();
   },
   'dv-clear': () => { Object.assign(S.dv, { filters: {}, search: '', offset: 0 }); renderData(); fetchData(); },
-  'dv-refresh': () => { S.dv.refs = null; fetchData(); },
+  'dv-refresh': async () => { if (S.dv.mode === 'structure') { if (!(await seConfirmDiscard())) return; S.dv.se = null; return fetchStructure(); } S.dv.refs = null; fetchData(); },
+  'dv-mode': async (el) => {
+    const d = S.dv, mode = el.dataset.mode === 'structure' ? 'structure' : 'data';
+    if (d.mode === mode || d.kind === 'query') return;
+    if (mode === 'data' && !(await seConfirmDiscard(d))) return;
+    if (mode === 'data') d.se = null;
+    if (gridEditor) closeEditor(true);
+    rememberScroll(); d.mode = mode; saveTabs(); renderData(); ensureLoaded(d);
+  },
+  'se-edit': () => { const d = S.dv; if (!d.st || d.st.view) return; S.stClosed.delete('cols'); seStart(d); renderStructure(); seRefresh(d); },
+  'se-cancel': async () => { const d = S.dv; if (!(await seConfirmDiscard(d))) return; d.se = null; renderStructure(); },
+  'se-reset': () => { const d = S.dv; seStart(d); renderStructure(); seRefresh(d); },
+  'se-apply': () => seApply(),
+  'se-add': (el) => {
+    const d = S.dv, se = d.se, g = el.dataset.g; if (!se) return;
+    let it;
+    if (g === 'cols') { const n = se.cols.filter((c) => !c.orig).length + 1; it = { k: uid(), orig: null, _prev: '', name: `new_column${n > 1 ? '_' + n : ''}`, base: 'VARCHAR(255)', unsigned: false, zerofill: false, nullable: true, defaultSql: '', auto: false, onUpdate: '', comment: '', expr: '', stored: false, pk: false }; it._prev = it.name; S.stClosed.delete('cols'); }
+    else if (g === 'idx') { it = { k: uid(), orig: null, name: '', columns: '', unique: el.dataset.unique === '1', kind: '', comment: '' }; S.stClosed.delete(it.unique ? 'uq' : 'idx'); }
+    else { it = { k: uid(), orig: null, name: '', columns: '', refDb: d.db, refTable: '', refColumns: 'id', onUpdate: 'NO ACTION', onDelete: 'RESTRICT' }; S.stClosed.delete('fk'); }
+    se[g].push(it); renderStructure(); seRefresh(d);
+    const f = document.querySelector(`#dv-struct [data-k="${it.k}"][data-f="${g === 'cols' ? 'name' : 'columns'}"]`); if (f) { f.focus(); f.select?.(); f.scrollIntoView({ block: 'nearest' }); }
+  },
+  'se-del': (el) => {
+    const d = S.dv, se = d.se, g = el.dataset.g, it = seItem(d, g, el.dataset.k); if (!it) return;
+    if (g === 'cols' && se.cols.filter((c) => !c.removed).length < 2) return toast('A table needs at least one column');
+    if (g === 'cols') { it.refSnap = JSON.stringify({ idx: se.idx, fks: se.fks }); seRenameRefs(se, it.name, null); }
+    if (!it.orig) se[g].splice(se[g].indexOf(it), 1); else it.removed = true;
+    renderStructure(); seRefresh(d);
+  },
+  'se-undo': (el) => {
+    const d = S.dv, se = d.se, g = el.dataset.g, it = seItem(d, g, el.dataset.k); if (!it) return;
+    it.removed = false;
+    if (g === 'cols' && it.refSnap) { const r = JSON.parse(it.refSnap); se.idx = r.idx; se.fks = r.fks; delete it.refSnap; }
+    renderStructure(); seRefresh(d);
+  },
+  'se-move': (el) => {
+    const d = S.dv, se = d.se, it = seItem(d, 'cols', el.dataset.k); if (!it) return;
+    const live = se.cols.filter((c) => !c.removed), i = live.indexOf(it), j = i + Number(el.dataset.dir);
+    if (i < 0 || j < 0 || j >= live.length) return;
+    const a = se.cols.indexOf(it), b = se.cols.indexOf(live[j]);
+    se.cols.splice(a, 1); se.cols.splice(b, 0, it);
+    renderStructure(); seRefresh(d);
+  },
+  'st-toggle': (el) => { const k = el.dataset.key; if (S.stClosed.has(k)) S.stClosed.delete(k); else S.stClosed.add(k); store.set('st.closed', [...S.stClosed]); renderStructure(); },
+  'st-open': (el) => { const d = S.dv, f = (el.dataset.dir === 'in' ? d.st.dependencies : d.st.foreignKeys)[Number(el.dataset.i)]; if (!f) return; if (el.dataset.dir === 'in') openTable(d.connId, f.db, f.table); else openTable(d.connId, f.refDb, f.refTable); },
+  'st-copy-sql': () => { const x = S.dv.st; if (!x) return; navigator.clipboard.writeText(x.ddl + ';'); toast('Copied CREATE statement', 'ok'); },
+  'st-query-sql': () => { const d = S.dv; if (!d.st) return; openQuery(d.connId, d.db, d.st.ddl + ';'); },
   'dv-export': async () => {
     const { connId, db, table } = S.dv;
     S.e.allTables = false; go('export');
@@ -3043,6 +3380,20 @@ const changes = {
   'q-coe': (el) => { S.dv.coe = el.checked; },
   'upd-auto': (el) => { U.auto = el.checked; store.set('update.auto', el.checked); if (el.checked && U.state === 'idle') checkUpdates(false); },
   'ct-coll': (el) => { CT.collation = el.value; },
+  'se-chk': (el) => {
+    const d = S.dv, se = d.se, it = seItem(d, el.dataset.g, el.dataset.k); if (!it) return;
+    it[el.dataset.f] = el.checked;
+    if (el.dataset.f === 'auto' && el.checked) { it.pk = true; it.nullable = false; it.defaultSql = ''; if (!/int/i.test(it.base)) it.base = 'BIGINT'; it.unsigned = true; se.cols.forEach((c) => { if (c !== it) c.auto = false; }); }
+    renderStructure(); seRefresh(d);
+  },
+  'se-sel': (el) => { const d = S.dv, it = seItem(d, el.dataset.g, el.dataset.k); if (!it) return; it[el.dataset.f] = el.value; seRefresh(d); },
+  'se-prop': (el) => { const d = S.dv; if (!d.se) return; d.se[el.dataset.f] = el.value; seRefresh(d); },
+  'se-commit': (el) => {
+    // Column renamed: carry the new name into indexes and foreign keys once the field is left.
+    const d = S.dv, se = d.se, it = seItem(d, 'cols', el.dataset.k); if (!se || !it) return;
+    const to = it.name.trim();
+    if (to && it._prev && to !== it._prev) { seRenameRefs(se, it._prev, to); it._prev = to; renderStructure(); seRefresh(d); }
+  },
   'ct-chk': (el) => {
     const c = CT.columns[Number(el.dataset.i)], k = el.dataset.k;
     c[k] = el.checked;
@@ -3089,6 +3440,8 @@ const inputs = {
     thRaf = requestAnimationFrame(() => { editTheme({ [k]: v }, false); const sw_ = $('#th-edit .th-swatch'); if (sw_) { const d = Theme.derive(Theme.current); sw_.style.background = d['--accent-grad']; sw_.style.color = d['--on-accent']; } });
   },
   'ct-name': (el) => { CT.name = el.value; if (CT.mode === 'table') refreshCtSql(); else $('#ct-go')?.toggleAttribute('disabled', !el.value.trim()); },
+  'se': (el) => { const d = S.dv, it = seItem(d, el.dataset.g, el.dataset.k); if (!it) return; it[el.dataset.f] = el.value; seRefresh(d); },
+  'se-prop': (el) => { const d = S.dv; if (!d.se) return; d.se[el.dataset.f] = el.value; seRefresh(d); },
   'ct-col': (el) => { CT.columns[Number(el.dataset.i)][el.dataset.k] = el.value; refreshCtSql(); },
   'th-name': (el) => { TH.name = el.value; },
   'dv-search': (el) => { S.dv.search = el.value; fetchDataSoon(); },
@@ -3132,6 +3485,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.change) changes[el.dataset.change]?.(el, e);
+  if (el.dataset.input === 'se' && el.dataset.g === 'cols' && el.dataset.f === 'name') changes['se-commit'](el, e);
   if (el.dataset.dlgCheck) dlg[el.dataset.dlgCheck] = el.checked;
 });
 document.addEventListener('input', (e) => {
@@ -3152,6 +3506,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && e.target.dataset?.input === 'tree-tfilter' && e.target.value) { e.target.value = ''; e.target.dispatchEvent(new Event('input', { bubbles: true })); }
   if (S.view === 'data' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') { e.preventDefault(); actions['q-new'](); return; }
   if (S.view === 'data' && S.dv.kind === 'query' && S.dv.sel && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName) && !String(window.getSelection())) { e.preventDefault(); actions['q-copy'](); return; }
+  if (S.view === 'data' && S.dv.mode === 'structure' && S.dv.se && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); seApply(); return; }
   if (S.view === 'data' && S.dv.kind === 'query' && e.key === 'F5') { e.preventDefault(); runQuery(); return; }
   if (S.view !== 'data' || !S.tabs.length) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w') { e.preventDefault(); if (S.dv !== EMPTY_DV) closeTab(S.dv.key); }
@@ -3204,7 +3559,7 @@ document.addEventListener('scroll', closeMenu, true);
 document.addEventListener('keydown', (e) => {
   const d = S.dv;
   if (e.key === 'Escape') closeMenu();
-  if (S.view !== 'data' || !d.data || d.kind === 'query' || gridEditor) return;
+  if (S.view !== 'data' || !d.data || d.kind === 'query' || d.mode === 'structure' || gridEditor) return;
   if (document.querySelector('dialog[open]')) return;
   const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   const take = (fn) => { e.preventDefault(); e.stopPropagation(); fn(); };
@@ -3303,7 +3658,7 @@ async function bootApp() {
   // Reopen the tabs from last time before the first render, so Home and the tree see them.
   const savedTabs = store.get('tabs', null);
   if (savedTabs?.list?.length) {
-    for (const t of savedTabs.list) if (connById(t.connId)) S.tabs.push(t.kind === 'query' ? newQuery(t.connId, t.db, t.sql || '', t.title, t.key) : newDv(t.connId, t.db, t.table));
+    for (const t of savedTabs.list) if (connById(t.connId)) S.tabs.push(t.kind === 'query' ? newQuery(t.connId, t.db, t.sql || '', t.title, t.key) : Object.assign(newDv(t.connId, t.db, t.table), { mode: t.mode === 'structure' ? 'structure' : 'data' }));
     S.dv = S.tabs.find((t) => t.key === savedTabs.active) || S.tabs[0] || EMPTY_DV;
   }
   splash.step(45, S.tabs.length ? `Reopening <b>${plural(S.tabs.length, 'tab')}</b>…` : 'Getting things ready…');
